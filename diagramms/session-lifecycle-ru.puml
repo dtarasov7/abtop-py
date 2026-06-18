@@ -1,0 +1,30 @@
+@startuml
+title Жизненный цикл статуса сессии агента
+
+skinparam shadowing false
+
+[*] --> Discovered : найден файл сессии или rollout
+Discovered --> Unknown : недавний файл без живого процесса
+Discovered --> Waiting : живой процесс без активности
+Discovered --> Thinking : сообщение пользователя без ответа ассистента
+Discovered --> Executing : открыт tool call или активен дочерний процесс
+
+Waiting --> UserInput : нет явного запроса решения
+Waiting --> UserDecision : ожидается одобрение,\nподтверждение или выбор
+UserInput --> Thinking : пользователь отправляет новый запрос
+UserDecision --> Thinking : пользователь подтверждает или выбирает
+
+Thinking --> Executing : ассистент запускает инструмент
+Thinking --> Waiting : ответ ассистента завершен
+Executing --> Thinking : вернулся результат инструмента
+Executing --> Waiting : инструмент завершен и генерации нет
+
+Waiting --> RateLimited : квота исчерпана, сброс в будущем
+RateLimited --> Waiting : время сброса квоты прошло
+
+Executing --> Done : exec-сессия завершена
+Thinking --> Done : событие task_complete
+Waiting --> Done : управляющий процесс завершился
+Unknown --> [*]
+Done --> [*]
+@enduml

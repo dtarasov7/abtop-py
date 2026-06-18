@@ -1,0 +1,46 @@
+@startuml
+title Runtime-представление abtop-py
+
+skinparam shadowing false
+
+node "Рабочая станция разработчика" as Host {
+  node "Терминал" as Terminal
+  artifact "abtop-py.py" as App
+
+  node "Запущенные агенты" as Agents {
+    component "Процессы\nClaude Code" as ClaudeProc
+    component "Процессы\nCodex CLI/Desktop" as CodexProc
+    component "Дочерние инструменты\nи серверы" as ChildProc
+    component "MCP-серверы" as McpProc
+  }
+
+  node "Домашний каталог" as Home {
+    folder "~/.claude*" as ClaudeFiles
+    folder "~/.codex/sessions" as CodexFiles
+    folder "~/.config/abtop" as ConfigFiles
+    folder "~/.cache/abtop" as CacheFiles
+  }
+
+  node "Интерфейсы ОС" as OS {
+    component "/proc" as ProcFs
+    component "ps / lsof" as PsLsof
+    component "git" as Git
+  }
+}
+
+Terminal --> App : запускает TUI или snapshot-команду
+App --> ClaudeFiles : читает метаданные и транскрипты
+App --> CodexFiles : читает rollout-логи
+App --> ConfigFiles : читает конфиг
+App --> CacheFiles : читает/пишет кэш лимитов
+App --> ProcFs : процессы, память, порты
+App --> PsLsof : резервный путь не-Linux
+App --> Git : ветка и статус
+App --> Terminal : curses UI, текст или JSON
+
+ClaudeProc --> ChildProc : запускает инструменты
+CodexProc --> ChildProc : запускает инструменты
+ChildProc --> McpProc : может включать MCP-серверы
+App ..> ClaudeProc : сопоставляет по PID и файлам
+App ..> CodexProc : сопоставляет по PID и rollout-файлам
+@enduml

@@ -1,0 +1,40 @@
+@startuml
+title Архитектура компонентов abtop-py
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+actor "Пользователь" as User
+
+component "CLI\nargparse" as CLI
+component "MultiCollector" as MultiCollector
+component "ClaudeCollector" as ClaudeCollector
+component "CodexCollector" as CodexCollector
+component "Помощники процессов,\nпортов и Git" as Helpers
+component "Чтение лимитов\nи кэш" as RateLimits
+component "CursesUI" as TUI
+component "Текстовый и JSON\nвывод" as Output
+
+database "Локальные файлы\nсессии, транскрипты,\nконфиг, кэш" as Files
+cloud "Операционная система\n/proc, ps, lsof, git" as OS
+
+User --> CLI : запускает команду
+CLI --> MultiCollector : создает сборщик
+CLI --> TUI : интерактивный режим
+CLI --> Output : --once / --json
+TUI --> MultiCollector : цикл обновления
+Output --> MultiCollector : один сбор данных
+
+MultiCollector --> ClaudeCollector : сбор сессий Claude
+MultiCollector --> CodexCollector : сбор сессий Codex
+MultiCollector --> Helpers : дерево процессов, порты, Git
+MultiCollector --> RateLimits : данные квот
+
+ClaudeCollector --> Files : сессии .claude и JSONL
+CodexCollector --> Files : rollout JSONL из .codex
+RateLimits --> Files : кэш лимитов abtop
+Helpers --> OS : локальное состояние процессов и файлов
+
+MultiCollector --> TUI : список AgentSession
+MultiCollector --> Output : данные snapshot
+@enduml

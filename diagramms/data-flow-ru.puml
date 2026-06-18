@@ -1,0 +1,60 @@
+@startuml
+title Поток данных abtop-py
+
+skinparam shadowing false
+left to right direction
+
+rectangle "Локальные источники" as Sources {
+  file "JSON сессии Claude" as ClaudeSession
+  file "JSONL транскрипт Claude" as ClaudeTranscript
+  file "Rollout JSONL Codex" as CodexRollout
+  file "Конфиг и кэш лимитов" as ConfigCache
+  node "Таблица процессов и порты" as Processes
+  file "Рабочие деревья Git" as GitTrees
+}
+
+rectangle "Сбор данных" as Collection {
+  component "ClaudeCollector" as ClaudeCollector
+  component "CodexCollector" as CodexCollector
+  component "Помощники процессов" as ProcessHelpers
+  component "Чтение лимитов" as RateReaders
+}
+
+rectangle "Нормализация" as Normalization {
+  class "AgentSession" as AgentSession
+  class "ToolCall" as ToolCall
+  class "ChatMessage" as ChatMessage
+  class "RateLimitInfo" as RateLimitInfo
+}
+
+rectangle "Представление" as Presentation {
+  component "Curses-дашборд" as Dashboard
+  component "Текстовый снимок" as TextSnapshot
+  component "JSON-снимок" as JsonSnapshot
+}
+
+ClaudeSession --> ClaudeCollector
+ClaudeTranscript --> ClaudeCollector
+CodexRollout --> CodexCollector
+Processes --> ProcessHelpers
+GitTrees --> ProcessHelpers
+ConfigCache --> RateReaders
+
+ClaudeCollector --> AgentSession
+CodexCollector --> AgentSession
+ProcessHelpers --> AgentSession
+RateReaders --> RateLimitInfo
+AgentSession --> ToolCall
+AgentSession --> ChatMessage
+
+AgentSession --> Dashboard
+RateLimitInfo --> Dashboard
+AgentSession --> TextSnapshot
+AgentSession --> JsonSnapshot
+RateLimitInfo --> JsonSnapshot
+
+note bottom of Sources
+Все данные читаются с локальной машины.
+Вызовы API провайдеров не требуются.
+end note
+@enduml

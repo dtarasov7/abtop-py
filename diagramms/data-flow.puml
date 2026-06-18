@@ -1,0 +1,60 @@
+@startuml
+title abtop-py Data Flow
+
+skinparam shadowing false
+left to right direction
+
+rectangle "Local Sources" as Sources {
+  file "Claude session JSON" as ClaudeSession
+  file "Claude transcript JSONL" as ClaudeTranscript
+  file "Codex rollout JSONL" as CodexRollout
+  file "Config and rate-limit cache" as ConfigCache
+  node "Process table and ports" as Processes
+  file "Git working trees" as GitTrees
+}
+
+rectangle "Collection" as Collection {
+  component "ClaudeCollector" as ClaudeCollector
+  component "CodexCollector" as CodexCollector
+  component "Process helpers" as ProcessHelpers
+  component "Rate-limit readers" as RateReaders
+}
+
+rectangle "Normalization" as Normalization {
+  class "AgentSession" as AgentSession
+  class "ToolCall" as ToolCall
+  class "ChatMessage" as ChatMessage
+  class "RateLimitInfo" as RateLimitInfo
+}
+
+rectangle "Presentation" as Presentation {
+  component "Curses dashboard" as Dashboard
+  component "Text snapshot" as TextSnapshot
+  component "JSON snapshot" as JsonSnapshot
+}
+
+ClaudeSession --> ClaudeCollector
+ClaudeTranscript --> ClaudeCollector
+CodexRollout --> CodexCollector
+Processes --> ProcessHelpers
+GitTrees --> ProcessHelpers
+ConfigCache --> RateReaders
+
+ClaudeCollector --> AgentSession
+CodexCollector --> AgentSession
+ProcessHelpers --> AgentSession
+RateReaders --> RateLimitInfo
+AgentSession --> ToolCall
+AgentSession --> ChatMessage
+
+AgentSession --> Dashboard
+RateLimitInfo --> Dashboard
+AgentSession --> TextSnapshot
+AgentSession --> JsonSnapshot
+RateLimitInfo --> JsonSnapshot
+
+note bottom of Sources
+All data is read from the local machine.
+No provider API calls are required.
+end note
+@enduml

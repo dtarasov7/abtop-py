@@ -1,0 +1,38 @@
+@startuml
+title abtop-py TUI Architecture
+
+skinparam shadowing false
+left to right direction
+
+component "CursesUI" as UI
+component "Keyboard Handler" as Keyboard
+component "Refresh Timer" as Timer
+component "Panel Layout" as Layout
+
+rectangle "Panels" as Panels {
+  component "Context Panel" as Context
+  component "Quota Panel" as Quota
+  component "Tokens Panel" as Tokens
+  component "Projects Panel" as Projects
+  component "Ports Panel" as Ports
+  component "MCP Servers Panel" as Mcp
+  component "Sessions Table" as Sessions
+  component "Detail View\nSubagents, Chat, Timeline" as Details
+}
+
+component "MultiCollector" as Collector
+class "AgentSession" as AgentSession
+class "RateLimitInfo" as RateLimitInfo
+
+UI --> Keyboard : read keys
+UI --> Timer : auto refresh
+Keyboard --> UI : selection and view mode
+Timer --> Collector : collect
+UI --> Collector : manual refresh
+Collector --> AgentSession
+Collector --> RateLimitInfo
+UI --> Layout : compute panel sizes
+Layout --> Panels
+AgentSession --> Panels : session metrics and details
+RateLimitInfo --> Quota : quota usage
+@enduml

@@ -1,0 +1,40 @@
+@startuml
+title abtop-py Component Architecture
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+actor "User" as User
+
+component "CLI\nargparse" as CLI
+component "MultiCollector" as MultiCollector
+component "ClaudeCollector" as ClaudeCollector
+component "CodexCollector" as CodexCollector
+component "Process, Port,\nand Git Helpers" as Helpers
+component "Rate Limit\nReaders and Cache" as RateLimits
+component "CursesUI" as TUI
+component "Text and JSON\nOutput" as Output
+
+database "Local Files\nsessions, transcripts,\nconfig, cache" as Files
+cloud "Operating System\n/proc, ps, lsof, git" as OS
+
+User --> CLI : runs command
+CLI --> MultiCollector : creates collector
+CLI --> TUI : interactive mode
+CLI --> Output : --once / --json
+TUI --> MultiCollector : refresh loop
+Output --> MultiCollector : collect once
+
+MultiCollector --> ClaudeCollector : collect Claude sessions
+MultiCollector --> CodexCollector : collect Codex sessions
+MultiCollector --> Helpers : process tree, ports, git stats
+MultiCollector --> RateLimits : quota data
+
+ClaudeCollector --> Files : .claude sessions and JSONL
+CodexCollector --> Files : .codex rollout JSONL
+RateLimits --> Files : abtop rate-limit cache
+Helpers --> OS : local process and filesystem state
+
+MultiCollector --> TUI : AgentSession list
+MultiCollector --> Output : snapshot data
+@enduml

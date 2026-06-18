@@ -1,0 +1,30 @@
+@startuml
+title Agent Session Status Lifecycle
+
+skinparam shadowing false
+
+[*] --> Discovered : session file or rollout found
+Discovered --> Unknown : recent file without live process
+Discovered --> Waiting : live process is idle
+Discovered --> Thinking : user message has no assistant reply yet
+Discovered --> Executing : open tool call or active child process
+
+Waiting --> UserInput : no explicit decision request
+Waiting --> UserDecision : approval, confirmation,\nor choice is pending
+UserInput --> Thinking : user sends a new prompt
+UserDecision --> Thinking : user confirms or chooses
+
+Thinking --> Executing : assistant starts a tool call
+Thinking --> Waiting : assistant reply completed
+Executing --> Thinking : tool result returned
+Executing --> Waiting : tool finished and no generation is active
+
+Waiting --> RateLimited : quota is exhausted and reset is in the future
+RateLimited --> Waiting : quota reset time passes
+
+Executing --> Done : exec session completed
+Thinking --> Done : task_complete event
+Waiting --> Done : owning process exits
+Unknown --> [*]
+Done --> [*]
+@enduml

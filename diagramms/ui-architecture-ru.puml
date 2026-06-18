@@ -1,0 +1,38 @@
+@startuml
+title Архитектура TUI abtop-py
+
+skinparam shadowing false
+left to right direction
+
+component "CursesUI" as UI
+component "Обработчик клавиш" as Keyboard
+component "Таймер обновления" as Timer
+component "Раскладка панелей" as Layout
+
+rectangle "Панели" as Panels {
+  component "Панель контекста" as Context
+  component "Панель квот" as Quota
+  component "Панель токенов" as Tokens
+  component "Панель проектов" as Projects
+  component "Панель портов" as Ports
+  component "Панель MCP-серверов" as Mcp
+  component "Таблица сессий" as Sessions
+  component "Детали\nSubagents, чат, timeline" as Details
+}
+
+component "MultiCollector" as Collector
+class "AgentSession" as AgentSession
+class "RateLimitInfo" as RateLimitInfo
+
+UI --> Keyboard : читает клавиши
+UI --> Timer : автообновление
+Keyboard --> UI : выбор и режим просмотра
+Timer --> Collector : сбор данных
+UI --> Collector : ручное обновление
+Collector --> AgentSession
+Collector --> RateLimitInfo
+UI --> Layout : вычисляет размеры панелей
+Layout --> Panels
+AgentSession --> Panels : метрики и детали сессий
+RateLimitInfo --> Quota : использование квот
+@enduml
