@@ -1,6 +1,6 @@
 # abtop-py
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](CHANGELOG.md)
 
 `abtop-py` is a single-file, dependency-free terminal monitor for local AI agent sessions. It tracks Claude Code and Codex CLI/Desktop activity by reading local process state, session files, transcripts, and rate-limit caches.
 
@@ -9,12 +9,13 @@ The program does not call provider APIs and does not require third-party Python 
 ## Features
 
 - Live curses dashboard for Claude Code and Codex sessions.
+- btop-style top status line with host CPU, memory, load, agent memory, context, and session counters.
 - One-shot text output for scripts and terminals without TTY support.
 - JSON snapshot mode for integrations.
 - Token totals, context usage, token-rate history, and session timelines.
 - Tool-call and child-process visibility, including memory and listening ports.
 - MCP server panel with parent/profile/activity columns when MCP processes are visible.
-- Separate waiting labels for ordinary user input and explicit user decisions.
+- Separate waiting labels for ordinary user input, between-step idle moments, and explicit user decisions.
 - Git branch and working-tree counters for active projects.
 - Claude and Codex rate-limit display when local data is available.
 

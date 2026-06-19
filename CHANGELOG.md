@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-06-19
+
+### Added
+
+- btop-style top status line in `abtop-py` with host CPU, memory, load average, aggregate agent memory, average context usage, time, and session counters.
+- Codex between-step waiting label to avoid showing `waiting for input` during short idle gaps after assistant messages.
+
 ## [1.0.0] - 2026-06-18
 
 ### Added

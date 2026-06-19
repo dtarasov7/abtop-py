@@ -37,7 +37,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 APP_NAME = "abtop-py"
-__VERSION__ = "1.0.0"
+__VERSION__ = "1.1.0"
 __AUTHOR__ = "Tarasov Dmitry"
 
 DEFAULT_INTERVAL = 2.0
@@ -45,8 +45,10 @@ MAX_CHAT_MESSAGES = 12
 MAX_HISTORY = 10000
 MAX_LINE_BYTES = 10 * 1024 * 1024
 RECENT_CODEX_SECONDS = 10 * 60
+CODEX_BETWEEN_STEPS_GRACE_MS = 30 * 1000
 WAIT_REASON_USER_INPUT = "user_input"
 WAIT_REASON_USER_DECISION = "user_decision"
+WAIT_REASON_BETWEEN_STEPS = "between_steps"
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +117,17 @@ class RateLimitInfo:
     seven_day_pct: Optional[float] = None
     seven_day_resets_at: Optional[int] = None
     updated_at: Optional[int] = None
+
+
+@dataclass
+class HostMetrics:
+    """Lightweight host vitals for the top status line.
+
+    Рус: Легкие показатели хоста для верхней строки статуса.
+    """
+    cpu_pct: float
+    mem_pct: float
+    load1: float
 
 
 @dataclass
@@ -252,6 +265,7 @@ class CodexResult:
     model_generating: bool = False
     user_decision_pending: bool = False
     last_activity: float = 0.0
+    last_assistant_ts_ms: int = 0
     initial_prompt: str = ""
     chat_messages: List[ChatMessage] = field(default_factory=list)
     total_input: int = 0
@@ -1616,7 +1630,20 @@ def wait_task_text(wait_reason: str) -> str:
     """
     if wait_reason == WAIT_REASON_USER_DECISION:
         return "waiting for user decision"
+    if wait_reason == WAIT_REASON_BETWEEN_STEPS:
+        return "between steps"
     return "waiting for input"
+
+
+def within_codex_between_steps_grace(result: CodexResult) -> bool:
+    """Return True shortly after Codex emits an assistant message.
+
+    Рус: Возвращает True вскоре после сообщения ассистента Codex.
+    """
+    if result.last_assistant_ts_ms <= 0:
+        return False
+    age_ms = now_ms() - result.last_assistant_ts_ms
+    return 0 <= age_ms <= CODEX_BETWEEN_STEPS_GRACE_MS
 
 
 def parse_claude_transcript_delta(
@@ -2407,6 +2434,8 @@ def parse_codex_jsonl(path: Path) -> Optional[CodexResult]:
                     result.turn_count += 1
                     result.model_generating = False
                     result.thinking_since_ms = 0
+                    if ts_ms:
+                        result.last_assistant_ts_ms = ts_ms
                     msg = payload.get("message")
                     if isinstance(msg, str):
                         push_chat(result.chat_messages, "assistant", msg)
@@ -2439,6 +2468,8 @@ def parse_codex_jsonl(path: Path) -> Optional[CodexResult]:
                 elif item_type in ("message", "assistant_message"):
                     text = item.get("text") or item.get("content")
                     if isinstance(text, str):
+                        if ts_ms:
+                            result.last_assistant_ts_ms = ts_ms
                         push_chat(result.chat_messages, "assistant", text)
 
             elif typ == "turn_context":
@@ -2718,6 +2749,8 @@ class CodexCollector:
             else:
                 status = "Waiting"
                 wait_reason = infer_wait_reason(result.chat_messages)
+                if wait_reason == WAIT_REASON_USER_INPUT and within_codex_between_steps_grace(result):
+                    wait_reason = WAIT_REASON_BETWEEN_STEPS
 
         context_percent = (
             result.last_context_tokens / float(result.context_window) * 100.0
@@ -3103,6 +3136,137 @@ def aggregate_sessions(sessions: List[AgentSession]) -> Dict[str, Any]:
     }
 
 
+def read_cpu_times() -> Optional[Tuple[int, int]]:
+    """Return aggregate CPU busy/idle jiffies from /proc/stat.
+
+    Рус: Вернуть суммарные busy/idle jiffies CPU из /proc/stat.
+    """
+    try:
+        line = Path("/proc/stat").read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except Exception:
+        return None
+    fields = line.split()
+    if not fields or fields[0] != "cpu":
+        return None
+    nums: List[int] = []
+    for part in fields[1:]:
+        try:
+            nums.append(int(part))
+        except Exception:
+            nums.append(0)
+    if len(nums) < 4:
+        return None
+    user, nice, system, idle = nums[:4]
+    iowait = nums[4] if len(nums) > 4 else 0
+    irq = nums[5] if len(nums) > 5 else 0
+    softirq = nums[6] if len(nums) > 6 else 0
+    steal = nums[7] if len(nums) > 7 else 0
+    busy = user + nice + system + irq + softirq + steal
+    idle_all = idle + iowait
+    return busy, idle_all
+
+
+def sample_mem_pct() -> Optional[float]:
+    """Return used memory percentage from /proc/meminfo.
+
+    Рус: Вернуть процент использованной памяти из /proc/meminfo.
+    """
+    try:
+        lines = Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return None
+    total = 0
+    available = 0
+    for line in lines:
+        if line.startswith("MemTotal:"):
+            total = safe_int(line.split()[1] if len(line.split()) > 1 else "0")
+        elif line.startswith("MemAvailable:"):
+            available = safe_int(line.split()[1] if len(line.split()) > 1 else "0")
+        if total and available:
+            break
+    if total <= 0:
+        return None
+    return max(0.0, min(100.0, (total - available) / float(total) * 100.0))
+
+
+def sample_load1() -> Optional[float]:
+    """Return 1-minute load average from /proc/loadavg.
+
+    Рус: Вернуть среднюю нагрузку за 1 минуту из /proc/loadavg.
+    """
+    try:
+        first = Path("/proc/loadavg").read_text(encoding="utf-8", errors="replace").split()[0]
+        return float(first)
+    except Exception:
+        return None
+
+
+def sample_host_metrics(prev_cpu: Optional[Tuple[int, int]]) -> Tuple[Optional[HostMetrics], Optional[Tuple[int, int]]]:
+    """Sample host CPU, memory, and load metrics.
+
+    Рус: Снять показатели CPU, памяти и средней нагрузки хоста.
+    """
+    current_cpu = read_cpu_times()
+    if current_cpu is None:
+        return None, prev_cpu
+    if prev_cpu is None:
+        cpu_pct = 0.0
+    else:
+        busy_delta = max(0, current_cpu[0] - prev_cpu[0])
+        idle_delta = max(0, current_cpu[1] - prev_cpu[1])
+        total_delta = busy_delta + idle_delta
+        cpu_pct = (busy_delta / float(total_delta) * 100.0) if total_delta > 0 else 0.0
+    mem_pct = sample_mem_pct()
+    load1 = sample_load1()
+    if mem_pct is None or load1 is None:
+        return None, current_cpu
+    return HostMetrics(cpu_pct=cpu_pct, mem_pct=mem_pct, load1=load1), current_cpu
+
+
+def header_agent_summary(sessions: Sequence[AgentSession]) -> str:
+    """Return the aggregate agent summary used in the top header.
+
+    Рус: Вернуть сводку агентов для верхней строки.
+    """
+    mem_mb = sum(s.mem_mb for s in sessions)
+    if mem_mb >= 1024:
+        mem = "%.1fG" % (mem_mb / 1024.0)
+    else:
+        mem = "%dM" % mem_mb
+    ctx_values = [s.context_percent for s in sessions if s.context_percent > 0.0]
+    avg_ctx = sum(ctx_values) / float(len(ctx_values)) if ctx_values else 0.0
+    return "agents Σ%s ctx%%%.0f%%" % (mem, avg_ctx)
+
+
+def header_host_summary(host: HostMetrics) -> str:
+    """Return the host summary used in the top header.
+
+    Рус: Вернуть сводку хоста для верхней строки.
+    """
+    return "CPU %2.0f%%  MEM %2.0f%%  L %.1f" % (host.cpu_pct, host.mem_pct, host.load1)
+
+
+def pick_header_metrics(
+    host: Optional[str],
+    agent: str,
+    width: int,
+    base: int,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Pick which metric blocks fit in the top header.
+
+    Рус: Выбрать, какие блоки метрик помещаются в верхнюю строку.
+    """
+    if width <= 80:
+        return None, None
+    agent_w = len(agent) + 2
+    host_w = len(host) + 3 if host else 0
+    if width >= base + host_w + agent_w:
+        return host, agent
+    if width >= base + agent_w:
+        return None, agent
+    return None, None
+
+
 # ---------------------------------------------------------------------------
 # Text and curses UI
 # ---------------------------------------------------------------------------
@@ -3132,6 +3296,8 @@ def status_display(status: str, wait_reason: str = "") -> str:
     if status == "Thinking":
         return "Think"
     if status == "Waiting":
+        if wait_reason == WAIT_REASON_BETWEEN_STEPS:
+            return "Idle"
         return "Decide" if wait_reason == WAIT_REASON_USER_DECISION else "Wait"
     if status == "RateLimited":
         return "Limit"
@@ -3548,6 +3714,8 @@ class CursesUI:
         self.status = ""
         self.colors: Dict[str, int] = {}
         self.show_timeline = False
+        self.host_metrics: Optional[HostMetrics] = None
+        self.prev_cpu_times: Optional[Tuple[int, int]] = None
 
     def run(self) -> None:
         """Start the curses UI loop.
@@ -3678,6 +3846,7 @@ class CursesUI:
         Рус: Обновить данные из сборщика и обновить список сессий.
         """
         try:
+            self.host_metrics, self.prev_cpu_times = sample_host_metrics(self.prev_cpu_times)
             self.sessions = self.collector.collect()
             self.last_collect = time.time()
             if self.selected >= len(self.sessions):
@@ -3704,6 +3873,8 @@ class CursesUI:
 
         y = 0
         footer_h = 1
+        self.draw_header(stdscr, y, width)
+        y += 1
         available = max(0, height - y - footer_h)
         context_h = min(10, max(5, len(self.sessions) + 4)) if available >= 24 and width >= 100 else 0
         mid_h = 8 if available - context_h >= 16 and width >= 100 else 0
@@ -3733,16 +3904,45 @@ class CursesUI:
         stdscr.refresh()
 
     def draw_header(self, stdscr: Any, y: int, width: int) -> None:
-        """Draw the title bar and token rate sparkline.
+        """Draw the btop-style top status line.
 
-        Рус: Отрисовать заголовок и спарклайн скорости токенов.
+        Рус: Отрисовать верхнюю btop-style строку статуса.
         """
+        session_count = len(self.sessions)
         active = len([s for s in self.sessions if s.status in ("Thinking", "Executing")])
-        left = "%s v%s - agent monitor" % (APP_NAME, __VERSION__)
-        right = "%s   %d↑  %d●" % (time.strftime("%H:%M"), active, len(self.sessions))
+        now = time.strftime("%H:%M")
+        title = " %s v%s " % (APP_NAME, __VERSION__)
+        right = " %s  %d↑ %d● " % (now, active, session_count)
+        host_str = header_host_summary(self.host_metrics) if self.host_metrics else None
+        agent_str = header_agent_summary(self.sessions)
+        base = len(title) + len(right) + 4
+        host_render, agent_render = pick_header_metrics(host_str, agent_str, width, base)
+
         self.add(stdscr, y, 0, " " * width, width, self.attr("header", bold=True))
-        self.add(stdscr, y, 1, clamp(left, max(0, width - len(right) - 2)), width, self.attr("fg", bold=True))
-        self.add(stdscr, y, max(0, width - len(right) - 1), right, width, self.attr("cyan", bold=True))
+        x = 0
+        self.add(stdscr, y, x, title, width - x, self.attr("fg", bold=True))
+        x += len(title)
+        if host_render:
+            text = " %s " % host_render
+            self.add(stdscr, y, x, text, width - x, self.attr("dim", bold=True))
+            x += len(text)
+        if host_render and agent_render:
+            self.add(stdscr, y, x, "─", width - x, self.attr("dim"))
+            x += 1
+        if agent_render:
+            text = " %s " % agent_render
+            self.add(stdscr, y, x, text, width - x, self.attr("dim", bold=True))
+            x += len(text)
+
+        pad = max(0, width - x - len(right))
+        x += pad
+        self.add(stdscr, y, x, " %s  " % now, width - x, self.attr("dim", bold=True))
+        x += len(" %s  " % now)
+        active_text = "%d↑" % active
+        self.add(stdscr, y, x, active_text, width - x, self.attr("green", bold=True))
+        x += len(active_text)
+        sessions_text = " %d●  " % session_count
+        self.add(stdscr, y, x, sessions_text, width - x, self.attr("fg", bold=True))
 
     def draw_footer(self, stdscr: Any, y: int, width: int) -> None:
         """Draw the footer with hotkey hints and session count.
