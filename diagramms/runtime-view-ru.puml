@@ -19,10 +19,11 @@ node "Рабочая станция разработчика" as Host {
     folder "~/.codex/sessions" as CodexFiles
     folder "~/.config/abtop" as ConfigFiles
     folder "~/.cache/abtop" as CacheFiles
+    artifact "Claude StatusLine\nabtop-statusline.sh" as StatusLine
   }
 
   node "Интерфейсы ОС" as OS {
-    component "/proc" as ProcFs
+    component "/proc\nпроцессы, память, loadavg" as ProcFs
     component "ps / lsof" as PsLsof
     component "git" as Git
   }
@@ -33,14 +34,20 @@ App --> ClaudeFiles : читает метаданные и транскрипт�
 App --> CodexFiles : читает rollout-логи
 App --> ConfigFiles : читает конфиг
 App --> CacheFiles : читает/пишет кэш лимитов
-App --> ProcFs : процессы, память, порты
+App --> ProcFs : процессы, память, порты, метрики хоста
 App --> PsLsof : резервный путь не-Linux
 App --> Git : ветка и статус
 App --> Terminal : curses UI, текст или JSON
 
+ClaudeProc --> StatusLine : передает данные quota
+StatusLine --> ClaudeFiles : пишет abtop-rate-limits.json
 ClaudeProc --> ChildProc : запускает инструменты
 CodexProc --> ChildProc : запускает инструменты
 ChildProc --> McpProc : может включать MCP-серверы
 App ..> ClaudeProc : сопоставляет по PID и файлам
 App ..> CodexProc : сопоставляет по PID и rollout-файлам
+note right of CodexProc
+Если ownership неясен,
+память показывается как неизвестная (Σ-).
+end note
 @enduml

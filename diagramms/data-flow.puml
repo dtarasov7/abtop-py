@@ -9,7 +9,7 @@ rectangle "Local Sources" as Sources {
   file "Claude transcript JSONL" as ClaudeTranscript
   file "Codex rollout JSONL" as CodexRollout
   file "Config and rate-limit cache" as ConfigCache
-  node "Process table and ports" as Processes
+  node "Process table, ports,\nand host metrics" as Processes
   file "Git working trees" as GitTrees
 }
 
@@ -18,13 +18,16 @@ rectangle "Collection" as Collection {
   component "CodexCollector" as CodexCollector
   component "Process helpers" as ProcessHelpers
   component "Rate-limit readers" as RateReaders
+  component "Activity aggregation" as ActivityAggregation
 }
 
 rectangle "Normalization" as Normalization {
   class "AgentSession" as AgentSession
   class "ToolCall" as ToolCall
-  class "ChatMessage" as ChatMessage
+  class "ChatMessage\nwith timestamp" as ChatMessage
   class "RateLimitInfo" as RateLimitInfo
+  class "ProjectActivity" as ProjectActivity
+  class "HostMetrics" as HostMetrics
 }
 
 rectangle "Presentation" as Presentation {
@@ -43,12 +46,17 @@ ConfigCache --> RateReaders
 ClaudeCollector --> AgentSession
 CodexCollector --> AgentSession
 ProcessHelpers --> AgentSession
+ProcessHelpers --> HostMetrics
 RateReaders --> RateLimitInfo
 AgentSession --> ToolCall
 AgentSession --> ChatMessage
+AgentSession --> ActivityAggregation
+ActivityAggregation --> ProjectActivity
 
 AgentSession --> Dashboard
 RateLimitInfo --> Dashboard
+ProjectActivity --> Dashboard
+HostMetrics --> Dashboard
 AgentSession --> TextSnapshot
 AgentSession --> JsonSnapshot
 RateLimitInfo --> JsonSnapshot

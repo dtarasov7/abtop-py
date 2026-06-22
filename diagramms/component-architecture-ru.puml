@@ -11,12 +11,14 @@ component "MultiCollector" as MultiCollector
 component "ClaudeCollector" as ClaudeCollector
 component "CodexCollector" as CodexCollector
 component "Помощники процессов,\nпортов и Git" as Helpers
+component "Сэмплер метрик\nхоста" as HostMetrics
 component "Чтение лимитов\nи кэш" as RateLimits
+component "Агрегация времени\nи активности" as Activity
 component "CursesUI" as TUI
 component "Текстовый и JSON\nвывод" as Output
 
 database "Локальные файлы\nсессии, транскрипты,\nконфиг, кэш" as Files
-cloud "Операционная система\n/proc, ps, lsof, git" as OS
+cloud "Операционная система\n/proc, loadavg, ps, lsof, git" as OS
 
 User --> CLI : запускает команду
 CLI --> MultiCollector : создает сборщик
@@ -28,13 +30,17 @@ Output --> MultiCollector : один сбор данных
 MultiCollector --> ClaudeCollector : сбор сессий Claude
 MultiCollector --> CodexCollector : сбор сессий Codex
 MultiCollector --> Helpers : дерево процессов, порты, Git
+MultiCollector --> HostMetrics : CPU, память, load
 MultiCollector --> RateLimits : данные квот
+MultiCollector --> Activity : скорость токенов и активность проектов
 
 ClaudeCollector --> Files : сессии .claude и JSONL
 CodexCollector --> Files : rollout JSONL из .codex
 RateLimits --> Files : кэш лимитов abtop
 Helpers --> OS : локальное состояние процессов и файлов
+HostMetrics --> OS : CPU, память, load хоста
 
-MultiCollector --> TUI : список AgentSession
+MultiCollector --> TUI : сессии, скорости, метрики хоста
+Activity --> TUI : строки ProjectActivity
 MultiCollector --> Output : данные snapshot
 @enduml

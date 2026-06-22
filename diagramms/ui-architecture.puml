@@ -8,21 +8,24 @@ component "CursesUI" as UI
 component "Keyboard Handler" as Keyboard
 component "Refresh Timer" as Timer
 component "Panel Layout" as Layout
+component "Top Header\nHost + agent summary" as Header
 
 rectangle "Panels" as Panels {
-  component "Context Panel" as Context
-  component "Quota Panel" as Quota
+  component "Context Panel\nToken rate + time axis" as Context
+  component "Quota Panel\nupd age + reset windows" as Quota
   component "Tokens Panel" as Tokens
-  component "Projects Panel" as Projects
+  component "Projects Activity\nState, Last, Tok/m" as Projects
   component "Ports Panel" as Ports
   component "MCP Servers Panel" as Mcp
-  component "Sessions Table" as Sessions
-  component "Detail View\nSubagents, Chat, Timeline" as Details
+  component "Sessions Table\nLast column" as Sessions
+  component "Detail View\nSubagents, dated Chat, dated Timeline" as Details
 }
 
 component "MultiCollector" as Collector
 class "AgentSession" as AgentSession
 class "RateLimitInfo" as RateLimitInfo
+class "ProjectActivity" as ProjectActivity
+class "HostMetrics" as HostMetrics
 
 UI --> Keyboard : read keys
 UI --> Timer : auto refresh
@@ -31,8 +34,13 @@ Timer --> Collector : collect
 UI --> Collector : manual refresh
 Collector --> AgentSession
 Collector --> RateLimitInfo
+Collector --> ProjectActivity
+Collector --> HostMetrics
 UI --> Layout : compute panel sizes
+Layout --> Header
 Layout --> Panels
 AgentSession --> Panels : session metrics and details
 RateLimitInfo --> Quota : quota usage
+ProjectActivity --> Projects : project activity rows
+HostMetrics --> Header : CPU, MEM, load
 @enduml

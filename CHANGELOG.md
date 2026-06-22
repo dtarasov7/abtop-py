@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-06-22
+
+### Added
+
+- Time-aware UI labels: `Last` in the sessions table, dated `CHAT` and `TIMELINE` headers, and month-name date formatting.
+- Static relative time axis under the token-rate bar graph, with a labeled left edge and 30-second ticks toward `now`.
+- Project activity panel with one row per project, sorted by last activity, showing aggregate state, last update age, session count markers, and per-project tokens/minute.
+- Explicit Codex approval handling: approval-required tool calls are detected from escalated sandbox requests, shown as `Decide` / `Approve`, and grouped when multiple approval waits overlap.
+- `Queued` timeline rows for commands that were recorded while an approval wait was still blocking execution.
+
+### Changed
+
+- The top header now displays unknown attributed agent memory as `Σ-` instead of misleading `Σ0M`.
+- Quota data age is labeled as `upd Ns` instead of a bare `Ns ago`.
+- Claude quota setup hint now points to `./abtop-py.py --setup`.
+- Token-rate calculations use rolling values for numeric rates and per-tick values for graph bars so stale bursts do not keep drawing as live consumption.
+- Completed Codex tool calls use explicit `Wall time` from tool output when available, avoiding user-approval wait time being counted as command runtime.
+- Middle dashboard panels are one row taller to prevent quota reset labels from colliding with the token-rate footer.
+
+### Documentation
+
+- README files now describe top-header metrics, the token-rate time axis, project activity rows, dated chat/timeline headers, Codex approval handling, and memory attribution limits.
+- PlantUML diagrams now include host metrics, time metadata, project activity aggregation, approval/queued timeline behavior, and the updated UI panel model.
+
 ## [1.1.0] - 2026-06-19
 
 ### Added

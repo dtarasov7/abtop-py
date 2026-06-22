@@ -1,6 +1,6 @@
 # abtop-py
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](CHANGELOG.md)
 
 `abtop-py` is a single-file, dependency-free terminal monitor for local AI agent sessions. It tracks Claude Code and Codex CLI/Desktop activity by reading local process state, session files, transcripts, and rate-limit caches.
 
@@ -9,15 +9,39 @@ The program does not call provider APIs and does not require third-party Python 
 ## Features
 
 - Live curses dashboard for Claude Code and Codex sessions.
-- btop-style top status line with host CPU, memory, load, agent memory, context, and session counters.
+- btop-style top status line with host CPU, memory, one-minute load average, attributed agent memory, context, and session counters.
 - One-shot text output for scripts and terminals without TTY support.
 - JSON snapshot mode for integrations.
-- Token totals, context usage, token-rate history, and session timelines.
+- Token totals, context usage, token-rate history with a relative time axis, and dated session timelines.
 - Tool-call and child-process visibility, including memory and listening ports.
 - MCP server panel with parent/profile/activity columns when MCP processes are visible.
 - Separate waiting labels for ordinary user input, between-step idle moments, and explicit user decisions.
-- Git branch and working-tree counters for active projects.
+- Project activity panel with one row per project, sorted by last activity, showing state, last update age, and token rate.
+- Time-aware session table, chat header, and timeline headers with compact dates.
+- Codex approval waits are marked as decisions, overlapping approval waits are collapsed, and queued commands are not shown as long-running work.
 - Claude and Codex rate-limit display when local data is available.
+
+## Dashboard Notes
+
+The top header uses compact labels:
+
+- `CPU` / `MEM` are host utilization sampled from the local machine.
+- `L` is the one-minute load average.
+- `agents Σ...` is memory attributed to visible agent process trees. `Σ-` means memory is unknown, not zero.
+- `ctx%...` is the average non-zero context-window usage across visible sessions.
+
+The `context` panel shows token rate as vertical bars. Its bottom axis is relative to `now` at the right edge and marks 30-second intervals, with the left edge labeled even when it is not a round 30-second boundary.
+
+The `projects` panel is an activity view, not a Git summary. It shows one row per project:
+
+```text
+Project      State   Last   Tok/m
+vaultui-py   Work      5s   13.0k
+```
+
+Rows are sorted by `Last`, newest first. `Tok/m` is the per-project active-token rate for the current refresh interval, scaled to tokens per minute.
+
+`CHAT` and `TIMELINE` headers include compact dates such as `Jun 22 00:04`. Timeline rows still show durations, while the title shows the overall time range.
 
 ## Requirements
 
@@ -50,6 +74,8 @@ Install the Claude StatusLine helper used for Claude rate-limit collection:
 ```bash
 ./abtop-py.py --setup
 ```
+
+This writes `~/.claude/abtop-statusline.sh` and configures Claude Code `statusLine` so local Claude quota data can be exported to `abtop-rate-limits.json`.
 
 ## Options
 
@@ -90,11 +116,13 @@ claude_config_dirs = ["~/.claude-work"]
 - Process, memory, child process, and port data from the operating system.
 - MCP server hints derived from visible child process command lines.
 - Git state from the session working directories.
+- Host CPU, memory, and load average from `/proc` on Linux.
 
 ## Limitations
 
 - It shows sessions that can be found in local files or running processes.
 - Some process details may be unavailable without `/proc`, `ps`, or `lsof`.
+- Codex Desktop/recent rollout sessions may not have a reliable owning process tree; their memory is shown as unknown (`-` / `Σ-`) rather than zero.
 - Rate-limit data depends on local Claude StatusLine output or recent Codex rollout events.
 
 ## License

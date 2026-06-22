@@ -10,9 +10,14 @@ Discovered --> Thinking : user message has no assistant reply yet
 Discovered --> Executing : open tool call or active child process
 
 Waiting --> UserInput : no explicit decision request
+Waiting --> BetweenSteps : recent assistant message,\nshort idle grace period
 Waiting --> UserDecision : approval, confirmation,\nor choice is pending
+Waiting --> Queued : command recorded while\napproval is pending
 UserInput --> Thinking : user sends a new prompt
+BetweenSteps --> UserInput : grace period expires
+BetweenSteps --> Thinking : next user prompt
 UserDecision --> Thinking : user confirms or chooses
+Queued --> Executing : approval is granted
 
 Thinking --> Executing : assistant starts a tool call
 Thinking --> Waiting : assistant reply completed

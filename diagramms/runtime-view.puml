@@ -19,10 +19,11 @@ node "Developer Workstation" as Host {
     folder "~/.codex/sessions" as CodexFiles
     folder "~/.config/abtop" as ConfigFiles
     folder "~/.cache/abtop" as CacheFiles
+    artifact "Claude StatusLine\nabtop-statusline.sh" as StatusLine
   }
 
   node "OS Interfaces" as OS {
-    component "/proc" as ProcFs
+    component "/proc\nprocesses, memory, loadavg" as ProcFs
     component "ps / lsof" as PsLsof
     component "git" as Git
   }
@@ -33,14 +34,20 @@ App --> ClaudeFiles : read session metadata and transcripts
 App --> CodexFiles : read rollout logs
 App --> ConfigFiles : read config
 App --> CacheFiles : read/write rate-limit cache
-App --> ProcFs : process, memory, ports
+App --> ProcFs : process, memory, ports, host metrics
 App --> PsLsof : non-Linux fallback
 App --> Git : branch and status
 App --> Terminal : curses UI, text, or JSON
 
+ClaudeProc --> StatusLine : emits quota payload
+StatusLine --> ClaudeFiles : writes abtop-rate-limits.json
 ClaudeProc --> ChildProc : spawns tools
 CodexProc --> ChildProc : spawns tools
 ChildProc --> McpProc : may include MCP servers
 App ..> ClaudeProc : correlates by PID and files
 App ..> CodexProc : correlates by PID and rollout files
+note right of CodexProc
+If ownership is unclear,
+memory is shown as unknown (Σ-).
+end note
 @enduml

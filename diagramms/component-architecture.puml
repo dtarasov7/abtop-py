@@ -11,12 +11,14 @@ component "MultiCollector" as MultiCollector
 component "ClaudeCollector" as ClaudeCollector
 component "CodexCollector" as CodexCollector
 component "Process, Port,\nand Git Helpers" as Helpers
+component "Host Metrics\nSampler" as HostMetrics
 component "Rate Limit\nReaders and Cache" as RateLimits
+component "Time and Activity\nAggregators" as Activity
 component "CursesUI" as TUI
 component "Text and JSON\nOutput" as Output
 
 database "Local Files\nsessions, transcripts,\nconfig, cache" as Files
-cloud "Operating System\n/proc, ps, lsof, git" as OS
+cloud "Operating System\n/proc, loadavg, ps, lsof, git" as OS
 
 User --> CLI : runs command
 CLI --> MultiCollector : creates collector
@@ -28,13 +30,17 @@ Output --> MultiCollector : collect once
 MultiCollector --> ClaudeCollector : collect Claude sessions
 MultiCollector --> CodexCollector : collect Codex sessions
 MultiCollector --> Helpers : process tree, ports, git stats
+MultiCollector --> HostMetrics : CPU, memory, load
 MultiCollector --> RateLimits : quota data
+MultiCollector --> Activity : token rates and project activity
 
 ClaudeCollector --> Files : .claude sessions and JSONL
 CodexCollector --> Files : .codex rollout JSONL
 RateLimits --> Files : abtop rate-limit cache
 Helpers --> OS : local process and filesystem state
+HostMetrics --> OS : host CPU, memory, load
 
-MultiCollector --> TUI : AgentSession list
+MultiCollector --> TUI : sessions, rates, host metrics
+Activity --> TUI : ProjectActivity rows
 MultiCollector --> Output : snapshot data
 @enduml

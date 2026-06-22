@@ -37,7 +37,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 APP_NAME = "abtop-py"
-__VERSION__ = "1.1.0"
+__VERSION__ = "1.2.0"
 __AUTHOR__ = "Tarasov Dmitry"
 
 DEFAULT_INTERVAL = 2.0
@@ -49,6 +49,7 @@ CODEX_BETWEEN_STEPS_GRACE_MS = 30 * 1000
 WAIT_REASON_USER_INPUT = "user_input"
 WAIT_REASON_USER_DECISION = "user_decision"
 WAIT_REASON_BETWEEN_STEPS = "between_steps"
+MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,7 @@ class ToolCall:
     call_id: str = ""
     started_ms: int = 0
     completed_ms: int = 0
+    needs_approval: bool = False
 
 
 @dataclass
@@ -103,6 +105,7 @@ class ChatMessage:
     """
     role: str
     text: str
+    timestamp_ms: int = 0
 
 
 @dataclass
@@ -128,6 +131,20 @@ class HostMetrics:
     cpu_pct: float
     mem_pct: float
     load1: float
+
+
+@dataclass
+class ProjectActivity:
+    """Aggregated activity row for one project.
+
+    Рус: Агрегированная строка активности для одного проекта.
+    """
+    name: str
+    status: str
+    wait_reason: str
+    last_activity_ms: int
+    token_rate: float
+    session_count: int
 
 
 @dataclass
@@ -169,6 +186,7 @@ class AgentSession:
     tool_calls: List[ToolCall] = field(default_factory=list)
     pending_since_ms: int = 0
     thinking_since_ms: int = 0
+    last_activity_ms: int = 0
     config_root: str = ""
 
     def total_tokens(self) -> int:
@@ -518,6 +536,99 @@ def human_duration_ms(ms: int) -> str:
     return "%dms" % ms
 
 
+def compact_age_label(timestamp_ms: int) -> str:
+    """Return compact age from a millisecond timestamp, e.g. 6s, 2m, 10h.
+
+    Рус: Вернуть короткий возраст по timestamp в мс, например 6s, 2m, 10h.
+    """
+    if timestamp_ms <= 0:
+        return "-"
+    delta = max(0, int(time.time()) - int(timestamp_ms // 1000))
+    if delta < 60:
+        return "%ds" % delta
+    if delta < 3600:
+        return "%dm" % (delta // 60)
+    if delta < 86400:
+        return "%dh" % (delta // 3600)
+    return "%dd" % (delta // 86400)
+
+
+def date_clock_label_ms(timestamp_ms: int) -> str:
+    """Format a millisecond timestamp as local Mon DD HH:MM.
+
+    Рус: Форматировать timestamp в мс как локальное Mon DD HH:MM.
+    """
+    if timestamp_ms <= 0:
+        return ""
+    try:
+        dt = _dt.datetime.fromtimestamp(timestamp_ms / 1000.0)
+        month = MONTH_ABBR[max(0, min(11, dt.month - 1))]
+        return "%s %02d %s" % (month, dt.day, dt.strftime("%H:%M"))
+    except Exception:
+        return ""
+
+
+def time_range_label_ms(start_ms: int, end_ms: int, end_is_now: bool = False) -> str:
+    """Return a compact local time range.
+
+    Рус: Вернуть компактный локальный диапазон времени.
+    """
+    start = date_clock_label_ms(start_ms)
+    if end_is_now:
+        end = "now"
+    else:
+        start_dt = _dt.datetime.fromtimestamp(start_ms / 1000.0) if start_ms > 0 else None
+        end_dt = _dt.datetime.fromtimestamp(end_ms / 1000.0) if end_ms > 0 else None
+        if start_dt and end_dt and start_dt.date() == end_dt.date():
+            end = end_dt.strftime("%H:%M")
+        else:
+            end = date_clock_label_ms(end_ms)
+    if not start or not end:
+        return ""
+    return "%s-%s" % (start, end)
+
+
+def minute_second_label(seconds: int) -> str:
+    """Return M:SS for a small relative time axis.
+
+    Рус: Вернуть M:SS для небольшой относительной временной оси.
+    """
+    seconds = max(0, int(seconds))
+    return "%d:%02d" % (seconds // 60, seconds % 60)
+
+
+def relative_time_axis(width: int, seconds_per_col: float, tick_seconds: int = 30) -> str:
+    """Render a right-anchored relative time axis for a rolling chart.
+
+    Рус: Отрисовать правостороннюю относительную ось времени для скользящего графика.
+    """
+    if width <= 0:
+        return ""
+    seconds_per_col = max(0.1, float(seconds_per_col))
+    tick_seconds = max(1, int(tick_seconds))
+    chars = [" "] * width
+    max_age = int(round(max(0, width - 1) * seconds_per_col))
+    placements: List[Tuple[int, str]] = [(0, "! " + minute_second_label(max_age))]
+    age = (max_age // tick_seconds) * tick_seconds
+    if age == max_age:
+        age -= tick_seconds
+    while age >= tick_seconds:
+        pos = width - 1 - int(round(age / seconds_per_col))
+        if pos > 0:
+            placements.append((pos, "! " + minute_second_label(age)))
+        age -= tick_seconds
+    placements.append((width - 1, "!"))
+    placed_end = -1
+    for pos, label in sorted(placements, key=lambda item: item[0]):
+        if placed_end >= 0 and pos <= placed_end + 1:
+            continue
+        end = min(width, pos + len(label))
+        for idx, ch in enumerate(label[: max(0, end - pos)]):
+            chars[pos + idx] = ch
+        placed_end = end - 1
+    return "".join(chars)
+
+
 def clean_text(text: Any, limit: int = 500) -> str:
     """Strip control characters, redact secrets, and truncate text.
 
@@ -589,7 +700,7 @@ def redact_secrets(text: str) -> str:
     return result
 
 
-def push_chat(messages: List[ChatMessage], role: str, text: str) -> None:
+def push_chat(messages: List[ChatMessage], role: str, text: str, timestamp_ms: int = 0) -> None:
     """Append a cleaned chat message to the history, enforcing max size.
 
     Рус: Добавляет очищенное сообщение в историю чата с ограничением размера.
@@ -598,11 +709,12 @@ def push_chat(messages: List[ChatMessage], role: str, text: str) -> None:
         messages: Chat message list to append to. / Список сообщений чата.
         role: Message role (user/assistant). / Роль сообщения (пользователь/ассистент).
         text: Raw message text. / Исходный текст сообщения.
+        timestamp_ms: Message timestamp in milliseconds. / Timestamp сообщения в миллисекундах.
     """
     text = clean_text(text, 500)
     if not text:
         return
-    messages.append(ChatMessage(role=role, text=text))
+    messages.append(ChatMessage(role=role, text=text, timestamp_ms=timestamp_ms))
     if len(messages) > MAX_CHAT_MESSAGES:
         del messages[: len(messages) - MAX_CHAT_MESSAGES]
 
@@ -1393,6 +1505,30 @@ def explicit_duration_ms(value: Any, depth: int = 0) -> int:
     return 0
 
 
+def codex_output_duration_ms(output: Any) -> int:
+    """Extract the actual command wall time from Codex tool output.
+
+    Рус: Извлекает фактическое wall time команды из вывода инструмента Codex.
+    """
+    hinted = explicit_duration_ms(output)
+    if hinted > 0:
+        return hinted
+    if not isinstance(output, str):
+        return 0
+    match = re.search(
+        r"\bWall time:\s*(\d+(?:\.\d+)?)\s*(milliseconds?|msec|ms|seconds?|secs?|s)\b",
+        output,
+        re.I,
+    )
+    if not match:
+        return 0
+    value = safe_float(match.group(1))
+    unit = match.group(2).lower()
+    if unit in ("ms", "msec", "millisecond", "milliseconds"):
+        return max(1, int(round(value)))
+    return max(1, int(round(value * 1000)))
+
+
 def claude_tool_results(content: Any, parent: Dict[str, Any]) -> List[Tuple[str, int]]:
     """Get tool result call IDs and durations from user message content.
 
@@ -1501,6 +1637,104 @@ def pending_since_from_open_tools(open_calls: Dict[str, ToolCall]) -> int:
     return min(starts) if starts else 0
 
 
+def collapse_approval_timeline_calls(calls: Sequence[ToolCall], now: int) -> List[ToolCall]:
+    """Collapse overlapping Codex approval waits into one timeline row.
+
+    Рус: Схлопывает перекрывающиеся ожидания Codex approval в одну строку timeline.
+    """
+    result: List[ToolCall] = []
+    group: List[ToolCall] = []
+    group_end = 0
+    active_approval_end = 0
+
+    def interval(call: ToolCall) -> Tuple[int, int, bool]:
+        start = call.started_ms or 0
+        pending = call.duration_ms <= 0 and call.completed_ms <= 0 and start > 0
+        if pending:
+            return start, now, True
+        if call.completed_ms > 0:
+            return start, call.completed_ms, False
+        if call.duration_ms > 0 and start > 0:
+            return start, start + call.duration_ms, False
+        return start, start, False
+
+    def flush_group() -> None:
+        nonlocal group, group_end, active_approval_end
+        if not group:
+            return
+        if len(group) == 1:
+            result.append(group[0])
+            start, end, _pending = interval(group[0])
+            if start > 0 and end > 0:
+                active_approval_end = max(active_approval_end, end)
+        else:
+            starts: List[int] = []
+            ends: List[int] = []
+            pending = False
+            for item in group:
+                start, end, is_pending = interval(item)
+                if start > 0:
+                    starts.append(start)
+                if end > 0:
+                    ends.append(end)
+                pending = pending or is_pending
+            start = min(starts) if starts else 0
+            end = max(ends) if ends else 0
+            result.append(
+                ToolCall(
+                    name="approval",
+                    arg="%d approvals" % len(group),
+                    duration_ms=0 if pending else max(0, end - start),
+                    call_id="approval:%s" % ",".join(call.call_id for call in group if call.call_id),
+                    started_ms=start,
+                    completed_ms=0 if pending else end,
+                    needs_approval=True,
+                )
+            )
+            if start > 0 and end > 0:
+                active_approval_end = max(active_approval_end, end)
+        group = []
+        group_end = 0
+
+    for call in calls:
+        if not call.needs_approval:
+            flush_group()
+            if (
+                call.duration_ms <= 0
+                and call.completed_ms <= 0
+                and call.started_ms > 0
+                and active_approval_end > 0
+                and call.started_ms <= active_approval_end
+            ):
+                result.append(
+                    ToolCall(
+                        name="queued",
+                        arg=call.arg,
+                        duration_ms=0,
+                        call_id=call.call_id,
+                        started_ms=0,
+                        completed_ms=0,
+                    )
+                )
+                continue
+            result.append(call)
+            continue
+        start, end, _pending = interval(call)
+        if not group:
+            group = [call]
+            group_end = end
+            continue
+        if start > 0 and group_end > 0 and start <= group_end:
+            group.append(call)
+            group_end = max(group_end, end)
+            continue
+        flush_group()
+        group = [call]
+        group_end = end
+    flush_group()
+    return result
+
+
 def is_user_decision_tool_name(name: str) -> bool:
     """Detect tool names that usually pause for user approval or choice.
 
@@ -1607,6 +1841,35 @@ def is_user_decision_task(task: str) -> bool:
     """
     parts = command_tokens(str(task or ""))
     return bool(parts) and is_user_decision_tool_name(parts[0])
+
+
+def decode_codex_tool_arguments(arguments: Any) -> Dict[str, Any]:
+    """Return Codex tool arguments as a dict when possible.
+
+    Рус: Вернуть аргументы инструмента Codex как dict, если возможно.
+    """
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except Exception:
+            return {}
+    return arguments if isinstance(arguments, dict) else {}
+
+
+def is_codex_approval_tool_call(name: str, arguments: Any) -> bool:
+    """Detect Codex tool calls that are paused for external approval.
+
+    Рус: Определить вызовы Codex, остановленные в ожидании внешнего разрешения.
+    """
+    args = decode_codex_tool_arguments(arguments)
+    if not args:
+        return False
+    sandbox = str(args.get("sandbox_permissions") or args.get("sandbox_permission") or "").casefold()
+    if sandbox in ("require_escalated", "requires_escalated", "escalated"):
+        return True
+    if args.get("with_escalated_permissions") is True:
+        return True
+    return bool(args.get("justification")) and "escalat" in sandbox
 
 
 def infer_wait_reason(messages: Sequence[ChatMessage]) -> str:
@@ -1726,6 +1989,8 @@ def parse_claude_transcript_delta(
             result.offset = fh.tell()
             typ = value.get("type")
             ts_ms = parse_timestamp_ms(value.get("timestamp"))
+            if ts_ms:
+                result.last_activity = max(result.last_activity, ts_ms / 1000.0)
 
             if typ == "assistant":
                 result.saw_turn = True
@@ -1800,7 +2065,7 @@ def parse_claude_transcript_delta(
                             text = "\n".join(text_blocks)
                             if not result.first_assistant_text:
                                 result.first_assistant_text = clean_text(text, 200)
-                            push_chat(result.chat_messages, "assistant", text)
+                            push_chat(result.chat_messages, "assistant", text, ts_ms)
 
             elif typ == "user":
                 result.saw_turn = True
@@ -1815,7 +2080,7 @@ def parse_claude_transcript_delta(
                     result.pending_since_ms = 0
                     if not result.initial_prompt:
                         result.initial_prompt = clean_text(text, 120)
-                    push_chat(result.chat_messages, "user", text)
+                    push_chat(result.chat_messages, "user", text, ts_ms)
                 elif synthetic:
                     completed_ms = ts_ms or now_ms()
                     tool_results = claude_tool_results(content, value)
@@ -2237,6 +2502,7 @@ class ClaudeCollector:
             tool_calls=tail(state.tool_calls, 500),
             pending_since_ms=state.pending_since_ms,
             thinking_since_ms=state.thinking_since_ms,
+            last_activity_ms=int(state.last_activity * 1000) if state.last_activity else started_at,
             config_root=abbrev_path(root),
         )
 
@@ -2300,10 +2566,10 @@ def parse_codex_tool_arg(arguments: Any) -> str:
         Cleaned description string, or empty string. / Очищенная строка описания, или пустая строка.
     """
     if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except Exception:
+        decoded = decode_codex_tool_arguments(arguments)
+        if not decoded:
             return clean_text(arguments, 80)
+        arguments = decoded
     if not isinstance(arguments, dict):
         return ""
     for key in ("cmd", "command", "file_path", "path", "pattern"):
@@ -2335,6 +2601,8 @@ def parse_codex_jsonl(path: Path) -> Optional[CodexResult]:
     result = CodexResult()
     call_starts: Dict[str, int] = {}
     call_names: Dict[str, str] = {}
+    call_indices: Dict[str, int] = {}
+    approval_calls: Set[str] = set()
     pending_tasks: List[Tuple[str, str]] = []
     try:
         result.last_activity = path.stat().st_mtime
@@ -2389,7 +2657,7 @@ def parse_codex_jsonl(path: Path) -> Optional[CodexResult]:
                     if isinstance(msg, str):
                         if not result.initial_prompt:
                             result.initial_prompt = clean_text(msg, 120)
-                        push_chat(result.chat_messages, "user", msg)
+                        push_chat(result.chat_messages, "user", msg, ts_ms)
                 elif ptype == "token_count":
                     info = payload.get("info") or {}
                     if isinstance(info, dict):
@@ -2438,7 +2706,7 @@ def parse_codex_jsonl(path: Path) -> Optional[CodexResult]:
                         result.last_assistant_ts_ms = ts_ms
                     msg = payload.get("message")
                     if isinstance(msg, str):
-                        push_chat(result.chat_messages, "assistant", msg)
+                        push_chat(result.chat_messages, "assistant", msg, ts_ms)
                 elif ptype == "task_complete":
                     result.task_complete = True
                     result.model_generating = False
@@ -2452,25 +2720,49 @@ def parse_codex_jsonl(path: Path) -> Optional[CodexResult]:
                 if item_type == "function_call":
                     call_id = str(item.get("call_id") or item.get("id") or len(call_starts))
                     name = str(item.get("name") or "tool")
+                    needs_approval = is_codex_approval_tool_call(name, item.get("arguments"))
                     arg = parse_codex_tool_arg(item.get("arguments"))
-                    task = ("%s %s" % (name, arg)).strip()
+                    if needs_approval:
+                        task = ("approval required: %s" % arg).strip()
+                    else:
+                        task = ("%s %s" % (name, arg)).strip()
                     pending_tasks.append((call_id, task))
                     call_starts[call_id] = ts_ms or now_ms()
                     call_names[call_id] = name
-                    result.tool_calls.append(ToolCall(name=name, arg=arg, duration_ms=0))
+                    if needs_approval:
+                        approval_calls.add(call_id)
+                    call_indices[call_id] = len(result.tool_calls)
+                    result.tool_calls.append(
+                        ToolCall(
+                            name=name,
+                            arg=arg,
+                            duration_ms=0,
+                            call_id=call_id,
+                            started_ms=call_starts[call_id],
+                            needs_approval=needs_approval,
+                        )
+                    )
                 elif item_type == "function_call_output":
                     call_id = str(item.get("call_id") or item.get("id") or "")
                     start = call_starts.pop(call_id, 0)
                     call_names.pop(call_id, None)
+                    approval_calls.discard(call_id)
                     pending_tasks = [(cid, task) for cid, task in pending_tasks if cid != call_id]
-                    if start and result.tool_calls:
-                        result.tool_calls[-1].duration_ms = max(0, (ts_ms or now_ms()) - start)
+                    idx = call_indices.get(call_id)
+                    if start and idx is not None and idx < len(result.tool_calls):
+                        completed = ts_ms or now_ms()
+                        duration_hint = codex_output_duration_ms(item.get("output"))
+                        call = result.tool_calls[idx]
+                        if duration_hint > 0 and not call.needs_approval:
+                            complete_tool_call(call, completed, duration_hint)
+                        else:
+                            complete_tool_call(call, completed)
                 elif item_type in ("message", "assistant_message"):
                     text = item.get("text") or item.get("content")
                     if isinstance(text, str):
                         if ts_ms:
                             result.last_assistant_ts_ms = ts_ms
-                        push_chat(result.chat_messages, "assistant", text)
+                        push_chat(result.chat_messages, "assistant", text, ts_ms)
 
             elif typ == "turn_context":
                 payload = value.get("payload") or {}
@@ -2483,14 +2775,22 @@ def parse_codex_jsonl(path: Path) -> Optional[CodexResult]:
                     if cw:
                         result.context_window = cw
 
-    if not result.session_id:
-        return None
-    result.current_task = pending_tasks[-1][1] if pending_tasks else ""
-    result.pending_since_ms = min(call_starts.values()) if call_starts else 0
     result.user_decision_pending = any(
         is_user_decision_tool_name(call_names.get(call_id, "")) or is_user_decision_task(task)
+        or call_id in approval_calls
         for call_id, task in pending_tasks
     )
+    if not result.session_id:
+        return None
+    decision_tasks = [
+        task
+        for call_id, task in pending_tasks
+        if call_id in approval_calls
+        or is_user_decision_tool_name(call_names.get(call_id, ""))
+        or is_user_decision_task(task)
+    ]
+    result.current_task = decision_tasks[-1] if decision_tasks else (pending_tasks[-1][1] if pending_tasks else "")
+    result.pending_since_ms = min(call_starts.values()) if call_starts else 0
     if not result.model_generating:
         result.thinking_since_ms = 0
     if not result.started_at:
@@ -2811,6 +3111,7 @@ class CodexCollector:
             tool_calls=tail(result.tool_calls, 500),
             pending_since_ms=result.pending_since_ms,
             thinking_since_ms=result.thinking_since_ms,
+            last_activity_ms=int(result.last_activity * 1000) if result.last_activity else result.started_at,
             config_root=abbrev_path(self.sessions_dir.parent),
         )
 
@@ -3023,6 +3324,8 @@ class MultiCollector:
         self.tick_count = 5
         self.rate_limits: List[RateLimitInfo] = []
         self.prev_tokens: Dict[Tuple[str, str], int] = {}
+        self.prev_project_tokens: Dict[str, int] = {}
+        self.project_token_rates: Dict[str, float] = {}
         self.token_rates: List[float] = []
 
     def collect(self) -> List[AgentSession]:
@@ -3047,12 +3350,22 @@ class MultiCollector:
         sessions.sort(key=lambda s: s.started_at, reverse=True)
 
         rate = 0.0
+        project_totals: Dict[str, int] = {}
         for s in sessions:
             key = (s.agent_cli, s.session_id)
             total = s.active_tokens()
             prev = self.prev_tokens.get(key, total)
             rate += max(0, total - prev)
             self.prev_tokens[key] = total
+            project_key = s.cwd or s.project_name
+            project_totals[project_key] = project_totals.get(project_key, 0) + total
+        project_rates: Dict[str, float] = {}
+        for key, total in project_totals.items():
+            prev = self.prev_project_tokens.get(key, total)
+            project_rates[key] = max(0.0, float(total - prev))
+            self.prev_project_tokens[key] = total
+        self.prev_project_tokens = {key: value for key, value in self.prev_project_tokens.items() if key in project_totals}
+        self.project_token_rates = project_rates
         self.token_rates.append(rate)
         if len(self.token_rates) > 200:
             del self.token_rates[: len(self.token_rates) - 200]
@@ -3228,8 +3541,11 @@ def header_agent_summary(sessions: Sequence[AgentSession]) -> str:
 
     Рус: Вернуть сводку агентов для верхней строки.
     """
-    mem_mb = sum(s.mem_mb for s in sessions)
-    if mem_mb >= 1024:
+    mem_values = [s.mem_mb for s in sessions if s.mem_mb > 0]
+    mem_mb = sum(mem_values)
+    if not mem_values:
+        mem = "-"
+    elif mem_mb >= 1024:
         mem = "%.1fG" % (mem_mb / 1024.0)
     else:
         mem = "%dM" % mem_mb
@@ -3485,30 +3801,50 @@ def pct_bucket(value: Optional[float]) -> str:
     return "green"
 
 
-def project_rows(sessions: Sequence[AgentSession]) -> List[Tuple[str, str, int, int]]:
-    """Aggregate project info across sessions: name, branch, git added/modified counts.
+def project_status_priority(status: str) -> int:
+    """Return priority for aggregating several session statuses.
 
-    Рус: Агрегировать информацию о проектах по сессиям: имя, ветка, счетчики git добавленных/измененных файлов.
+    Рус: Вернуть приоритет для агрегации нескольких статусов сессий.
     """
-    seen: Dict[str, Tuple[str, str, int, int]] = {}
+    return {
+        "Executing": 50,
+        "Thinking": 40,
+        "Waiting": 30,
+        "RateLimited": 20,
+        "Unknown": 10,
+    }.get(status, 0)
+
+
+def project_activity_rows(
+    sessions: Sequence[AgentSession],
+    project_rates: Dict[str, float],
+    ticks_per_min: int,
+) -> List[ProjectActivity]:
+    """Aggregate project activity rows and sort by last activity.
+
+    Рус: Агрегировать строки активности проектов и отсортировать по последней активности.
+    """
+    seen: Dict[str, ProjectActivity] = {}
     for session in sessions:
         key = session.cwd or session.project_name
-        old = seen.get(key)
-        if old is None:
-            seen[key] = (
+        last_ms = session.last_activity_ms or session.started_at
+        row = seen.get(key)
+        if row is None:
+            seen[key] = ProjectActivity(
                 session.project_name,
-                session.git_branch or "-",
-                session.git_added,
-                session.git_modified,
+                session.status,
+                session.wait_reason,
+                last_ms,
+                project_rates.get(key, 0.0) * max(1, ticks_per_min),
+                1,
             )
         else:
-            seen[key] = (
-                old[0],
-                old[1] if old[1] != "-" else (session.git_branch or "-"),
-                max(old[2], session.git_added),
-                max(old[3], session.git_modified),
-            )
-    return list(seen.values())
+            row.last_activity_ms = max(row.last_activity_ms, last_ms)
+            row.session_count += 1
+            if project_status_priority(session.status) > project_status_priority(row.status):
+                row.status = session.status
+                row.wait_reason = session.wait_reason
+    return sorted(seen.values(), key=lambda row: row.last_activity_ms, reverse=True)
 
 
 def live_port_rows(sessions: Sequence[AgentSession]) -> List[Tuple[int, str, str]]:
@@ -3640,6 +3976,32 @@ def graph_rows(values: Sequence[float], width: int, height: int) -> List[str]:
         chars = ["⣿" if level >= threshold and values[i] > 0 else " " for i, level in enumerate(levels)]
         rows.append("".join(chars))
     return rows
+
+
+def rolling_token_rates_per_minute(values: Sequence[float], ticks_per_min: int) -> List[float]:
+    """Convert per-tick token deltas into rolling tokens-per-minute values.
+
+    Рус: Преобразовать дельты токенов за тик в скользящие значения токенов в минуту.
+    """
+    window = max(1, ticks_per_min)
+    samples = [max(0.0, float(value)) for value in values]
+    rates: List[float] = []
+    running = 0.0
+    for idx, value in enumerate(samples):
+        running += value
+        if idx >= window:
+            running -= samples[idx - window]
+        rates.append(running)
+    return rates
+
+
+def per_tick_token_rates_per_minute(values: Sequence[float], ticks_per_min: int) -> List[float]:
+    """Convert each per-tick token delta into an equivalent tokens-per-minute rate.
+
+    Рус: Преобразовать каждую дельту токенов за тик в эквивалентную скорость токенов в минуту.
+    """
+    multiplier = max(1, ticks_per_min)
+    return [max(0.0, float(value)) * multiplier for value in values]
 
 
 RU_PHYSICAL_LAYOUT = {
@@ -3877,7 +4239,7 @@ class CursesUI:
         y += 1
         available = max(0, height - y - footer_h)
         context_h = min(10, max(5, len(self.sessions) + 4)) if available >= 24 and width >= 100 else 0
-        mid_h = 8 if available - context_h >= 16 and width >= 100 else 0
+        mid_h = 9 if available - context_h >= 17 and width >= 100 else 0
         sessions_h = max(5, height - y - footer_h - context_h - mid_h)
 
         if context_h:
@@ -3969,7 +4331,9 @@ class CursesUI:
         inner_h = max(0, h - 2)
         agg = aggregate_sessions(self.sessions)
         ticks_per_min = max(1, int(60.0 / max(0.5, self.interval)))
-        tokens_per_min = int(sum(self.collector.token_rates[-ticks_per_min:]))
+        rate_history = rolling_token_rates_per_minute(self.collector.token_rates, ticks_per_min)
+        graph_history = per_tick_token_rates_per_minute(self.collector.token_rates, ticks_per_min)
+        tokens_per_min = int(rate_history[-1]) if rate_history else 0
         left_w = min(36, max(24, w // 4))
         right_w = min(74, max(42, w // 3))
         graph_w = max(8, w - left_w - right_w - 6)
@@ -3977,12 +4341,16 @@ class CursesUI:
         right_x = x + w - right_w - 1
 
         self.add(stdscr, inner_y, x + 2, "Token Rate ", w, self.attr("dim", bold=True))
-        self.add(stdscr, inner_y, x + 14, "%s/min" % human_tokens(tokens_per_min), w, self.attr("green", bold=True))
+        rate_text = "%s/min" % human_tokens(tokens_per_min)
+        self.add(stdscr, inner_y, x + 14, rate_text, w, self.attr("green", bold=True))
         self.add(stdscr, y + h - 2, x + 2, "%s Total" % human_tokens(agg["total_tokens"]), w, self.attr("fg", bold=True))
 
-        rows = graph_rows(self.collector.token_rates, graph_w, max(1, inner_h - 2))
+        rows = graph_rows(graph_history, graph_w, max(1, inner_h - 2))
         for idx, row in enumerate(rows):
             self.add(stdscr, inner_y + 1 + idx, graph_x, row, w, self.attr("orange"))
+        axis = relative_time_axis(graph_w, self.interval, 30) if graph_w > 1 else ""
+        if axis:
+            self.add(stdscr, y + h - 2, graph_x, axis, w, self.attr("dim", bold=True))
 
         self.add(stdscr, inner_y, right_x, "Project", w, self.attr("fg", bold=True))
         self.add(stdscr, inner_y, right_x + 18, "Context", w, self.attr("fg", bold=True))
@@ -4010,14 +4378,16 @@ class CursesUI:
             rl = sources.get(source)
             self.add(stdscr, y + 1, col_x, source.upper(), w, self.attr("fg", bold=True))
             if rl:
-                self.add(stdscr, y + 2, col_x, age_label(rl.updated_at), w, self.attr("dim"))
+                updated = "upd %s" % compact_age_label((rl.updated_at or 0) * 1000)
+                self.add(stdscr, y + 2, col_x, updated, w, self.attr("dim"))
                 self.draw_quota_window(stdscr, y + 3, col_x, col_w, "5h", rl.five_hour_pct, rl.five_hour_resets_at)
                 self.draw_quota_window(stdscr, y + 5, col_x, col_w, "7d", rl.seven_day_pct, rl.seven_day_resets_at)
             else:
                 self.add(stdscr, y + 2, col_x, "- no data", w, self.attr("dim"))
-                self.add(stdscr, y + 3, col_x, "abtop --setup" if source == "claude" else "run codex once", w, self.attr("dim"))
+                self.add(stdscr, y + 3, col_x, "./abtop-py.py --setup" if source == "claude" else "run codex once", w, self.attr("dim"))
         ticks_per_min = max(1, int(60.0 / max(0.5, self.interval)))
-        tokens_per_min = int(sum(self.collector.token_rates[-ticks_per_min:]))
+        rate_history = rolling_token_rates_per_minute(self.collector.token_rates, ticks_per_min)
+        tokens_per_min = int(rate_history[-1]) if rate_history else 0
         total = sum(s.total_tokens() for s in self.sessions)
         self.add(stdscr, y + h - 2, x + 2, "total %s %s/min" % (human_tokens(total), human_tokens(tokens_per_min)), w, self.attr("fg", bold=True))
 
@@ -4076,31 +4446,53 @@ class CursesUI:
             self.add(stdscr, y + h - 2, x + 2, clamp(graph + " tokens/turn", w - 4), w, self.attr("orange"))
 
     def draw_projects_panel(self, stdscr: Any, y: int, x: int, h: int, w: int) -> None:
-        """Draw the projects panel showing project names, branches, and git status.
+        """Draw the projects panel showing one activity row per project.
 
-        Рус: Отрисовать панель проектов, показывающую имена проектов, ветки и статус git.
+        Рус: Отрисовать панель проектов с одной строкой активности на проект.
         """
         self.box(stdscr, y, x, h, w, "projects", "⁴", "magenta")
-        rows = project_rows(self.sessions)
+        ticks_per_min = max(1, int(60.0 / max(0.5, self.interval)))
+        rows = project_activity_rows(self.sessions, self.collector.project_token_rates, ticks_per_min)
         if not rows:
             self.add(stdscr, y + 1, x + 2, "No projects", w, self.attr("dim"))
             return
-        row_y = y + 1
-        for name, branch, added, modified in rows:
+        state_w = 6
+        last_w = 5
+        rate_w = 7
+        name_w = max(8, w - state_w - last_w - rate_w - 8)
+        header = "%-*s %-*s %*s %*s" % (name_w, "Project", state_w, "State", last_w, "Last", rate_w, "Tok/m")
+        self.add(stdscr, y + 1, x + 2, clamp(header, w - 4), w, self.attr("fg", bold=True))
+        row_y = y + 2
+        for row in rows:
             if row_y >= y + h - 1:
                 break
-            self.add(stdscr, row_y, x + 2, clamp(name, w - 4), w, self.attr("fg", bold=True))
-            row_y += 1
-            if row_y >= y + h - 1:
-                break
-            status = "%s" % branch
-            if added:
-                status += " +%d" % added
-            if modified:
-                status += " ~%d" % modified
-            if not added and not modified:
-                status += " ✓clean"
-            self.add(stdscr, row_y, x + 4, clamp(status, w - 6), w, self.attr("green" if added == modified == 0 else "yellow", bold=True))
+            state = status_display(row.status, row.wait_reason)
+            if row.session_count > 1:
+                state = "%s×%d" % (state[: max(1, state_w - 2)], row.session_count)
+            last = compact_age_label(row.last_activity_ms)
+            rate = human_tokens(int(row.token_rate))
+            line = "%-*s %-*s %*s %*s" % (
+                name_w,
+                row.name[:name_w],
+                state_w,
+                state[:state_w],
+                last_w,
+                last[:last_w],
+                rate_w,
+                rate[:rate_w],
+            )
+            color = "green"
+            if row.status == "Executing":
+                color = "green"
+            elif row.status == "Thinking":
+                color = "cyan"
+            elif row.status == "Waiting":
+                color = "dim" if row.wait_reason == WAIT_REASON_BETWEEN_STEPS else "yellow"
+            elif row.status == "RateLimited":
+                color = "orange"
+            elif row.status == "Unknown":
+                color = "dim"
+            self.add(stdscr, row_y, x + 2, clamp(line, w - 4), w, self.attr(color, bold=color != "dim"))
             row_y += 1
 
     def draw_ports_panel(self, stdscr: Any, y: int, x: int, h: int, w: int) -> None:
@@ -4161,7 +4553,7 @@ class CursesUI:
 
         Рус: Отрисовать таблицу списка сессий с заголовком и строками.
         """
-        header = " AI  Pid     Project        Session   Config        Summary                         Status   Model          Context Tokens  Memory Turn"
+        header = " AI  Pid     Project        Session   Config        Summary                      Status   Model          Context Tokens  Memory Last  Turn"
         self.add(stdscr, y, x, clamp(header, w), w, self.attr("fg", bold=True))
         rows_avail = max(0, h - 1)
         row_span = 2 if rows_avail >= 2 else 1
@@ -4184,19 +4576,21 @@ class CursesUI:
             model = (session.model or "-").split("/")[-1]
             status_text = "%s %s" % (status_marker(session.status), status_display(session.status, session.wait_reason))
             config = session.config_root or "-"
-            line = "%s*%-2s %-7s %-14s %-9s %-13s %-31s %-8s %-14s %-7s %-7s %-6s %4d" % (
+            last_text = compact_age_label(session.last_activity_ms or session.started_at)
+            line = "%s*%-2s %-7s %-14s %-9s %-13s %-28s %-8s %-14s %-7s %-7s %-6s %-5s %4d" % (
                 marker,
                 agent_badge(session),
                 pid[:7],
                 session.project_name[:14],
                 session_short_id(session),
                 config[:13],
-                session_summary(session)[:31],
+                session_summary(session)[:28],
                 status_text[:8],
                 model[:14],
                 format_percent(session.context_percent),
                 human_tokens(session.total_tokens()),
                 "%dM" % session.mem_mb if session.mem_mb else "-",
+                last_text[:5],
                 session.turn_count,
             )
             self.add(stdscr, row_y, x, clamp(line, w), w, attr)
@@ -4289,7 +4683,14 @@ class CursesUI:
         """
         if h <= 0:
             return
-        self.add(stdscr, y, x, "CHAT (%d)" % len(session.chat_messages), w, self.attr("fg", bold=True))
+        last_chat_ms = 0
+        for msg in reversed(session.chat_messages):
+            if msg.timestamp_ms > 0:
+                last_chat_ms = msg.timestamp_ms
+                break
+        last_chat = date_clock_label_ms(last_chat_ms)
+        title = "CHAT (%d, last %s)" % (len(session.chat_messages), last_chat) if last_chat else "CHAT (%d)" % len(session.chat_messages)
+        self.add(stdscr, y, x, clamp(title, w), w, self.attr("fg", bold=True))
         rows = tail(session.chat_messages, max(0, h - 1))
         if not rows:
             self.add(stdscr, y + 1, x + 2, "no chat messages", w, self.attr("dim"))
@@ -4309,7 +4710,8 @@ class CursesUI:
         if h <= 0 or w <= 20:
             return
         now = now_ms()
-        calls = list(session.tool_calls)
+        raw_calls = list(session.tool_calls)
+        calls = collapse_approval_timeline_calls(raw_calls, now)
         thinking = session.thinking_since_ms > 0 and session.status in (
             "Thinking",
             "Executing",
@@ -4322,8 +4724,12 @@ class CursesUI:
 
             Рус: Вернуть длительность в миллисекундах для вызова инструмента.
             """
+            if call.name == "queued":
+                return 0
             if call.duration_ms > 0:
                 return call.duration_ms
+            if call.started_ms > 0 and call.completed_ms <= 0:
+                return max(0, now - call.started_ms)
             if session.pending_since_ms > 0 and index == len(calls) - 1:
                 return max(0, now - session.pending_since_ms)
             return 0
@@ -4334,7 +4740,24 @@ class CursesUI:
             [
                 call
                 for idx, call in enumerate(calls)
-                if call.duration_ms == 0 and session.pending_since_ms > 0 and idx == len(calls) - 1
+                if call.name != "queued"
+                and call.duration_ms == 0
+                and (
+                    (call.started_ms > 0 and call.completed_ms <= 0)
+                    or (session.pending_since_ms > 0 and idx == len(calls) - 1)
+                )
+            ]
+        )
+        pending_decision_count = len(
+            [
+                call
+                for idx, call in enumerate(calls)
+                if call.needs_approval
+                and call.duration_ms == 0
+                and (
+                    (call.started_ms > 0 and call.completed_ms <= 0)
+                    or (session.pending_since_ms > 0 and idx == len(calls) - 1)
+                )
             ]
         )
         thinking_duration = max(0, now - session.thinking_since_ms) if thinking else 0
@@ -4342,14 +4765,36 @@ class CursesUI:
 
         notes: List[str] = []
         if pending_count:
-            if session.wait_reason == WAIT_REASON_USER_DECISION:
+            if pending_decision_count or session.wait_reason == WAIT_REASON_USER_DECISION:
                 notes.append("waiting for decision")
             else:
                 notes.append("%d running" % pending_count)
         if thinking:
             notes.append("thinking %s" % human_duration_ms(thinking_duration))
-        suffix = ", " + ", ".join(notes) if notes else ""
-        title = "TIMELINE (%d calls, %s%s)" % (len(calls), human_duration_ms(total_duration), suffix)
+        range_starts: List[int] = []
+        range_ends: List[int] = []
+        range_ends_now = False
+        for call in raw_calls:
+            if call.started_ms > 0:
+                range_starts.append(call.started_ms)
+                if call.duration_ms <= 0 and call.completed_ms <= 0:
+                    range_ends.append(now)
+                    range_ends_now = True
+                elif call.completed_ms > 0:
+                    range_ends.append(call.completed_ms)
+                elif call.duration_ms > 0:
+                    range_ends.append(call.started_ms + call.duration_ms)
+        if thinking and session.thinking_since_ms > 0:
+            range_starts.append(session.thinking_since_ms)
+            range_ends.append(now)
+            range_ends_now = True
+        meta = ["%d calls" % len(raw_calls), human_duration_ms(total_duration)]
+        if range_starts and range_ends:
+            range_label = time_range_label_ms(min(range_starts), max(range_ends), range_ends_now)
+            if range_label:
+                meta.append(range_label)
+        meta.extend(notes)
+        title = "TIMELINE (%s)" % ", ".join(meta)
         self.add(stdscr, y, x, clamp(title, w), w, self.attr("fg", bold=True))
         if h == 1:
             return
@@ -4369,10 +4814,15 @@ class CursesUI:
                 break
             call = calls[idx]
             duration = durations[idx]
-            pending = call.duration_ms == 0 and session.pending_since_ms > 0 and idx == len(calls) - 1
-            color = self.tool_color(call.name)
-            label = self.tool_label(call.name)
-            star = " *" if duration == longest and duration > 0 and not pending else ""
+            pending = call.name != "queued" and call.duration_ms == 0 and (
+                (call.started_ms > 0 and call.completed_ms <= 0)
+                or (session.pending_since_ms > 0 and idx == len(calls) - 1)
+            )
+            approval_call = call.needs_approval
+            pending_decision = pending and approval_call
+            color = "red" if approval_call else self.tool_color(call.name)
+            label = "Approve" if approval_call else self.tool_label(call.name)
+            star = " *" if duration == longest and duration > 0 and not pending and not approval_call else ""
             soft_tone = color in ("orange", "yellow", "red")
             self.add(stdscr, row_y, x, clamp(label, name_w - 1), w, self.attr(color, bold=not soft_tone))
             self.add(stdscr, row_y, x + name_w, clamp(call.arg, arg_w), w, self.attr("dim", bold=True))
@@ -4381,7 +4831,7 @@ class CursesUI:
             self.add(stdscr, row_y, bar_x, "█" * fill, w, self.attr(color, bold=(not pending and not soft_tone), dim=pending))
             if fill < bar_w:
                 self.add(stdscr, row_y, bar_x + fill, "░" * (bar_w - fill), w, self.attr("dim", dim=True))
-            duration_text = "%s%s" % (human_duration_ms(duration), "…" if pending else star)
+            duration_text = "queued" if call.name == "queued" else "%s%s" % (human_duration_ms(duration), "…" if pending else star)
             self.add(stdscr, row_y, x + w - duration_w, "%9s" % duration_text, w, self.attr("dim" if not star else "yellow", bold=not star))
             row_y += 1
 
@@ -4414,6 +4864,7 @@ class CursesUI:
             "update_plan": "Plan",
             "write_stdin": "Input",
             "view_image": "Image",
+            "queued": "Queued",
         }
         return labels.get(name, name[:6] or "Tool")
 
@@ -4431,6 +4882,8 @@ class CursesUI:
             return "cyan"
         if label == "Image":
             return "magenta"
+        if label == "Queued":
+            return "dim"
         return "blue"
 
     def current_session(self) -> Optional[AgentSession]:

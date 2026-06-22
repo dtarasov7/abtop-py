@@ -8,21 +8,24 @@ component "CursesUI" as UI
 component "Обработчик клавиш" as Keyboard
 component "Таймер обновления" as Timer
 component "Раскладка панелей" as Layout
+component "Верхняя строка\nхост + агенты" as Header
 
 rectangle "Панели" as Panels {
-  component "Панель контекста" as Context
-  component "Панель квот" as Quota
+  component "Панель контекста\nскорость токенов + ось времени" as Context
+  component "Панель квот\nвозраст upd + окна reset" as Quota
   component "Панель токенов" as Tokens
-  component "Панель проектов" as Projects
+  component "Активность проектов\nState, Last, Tok/m" as Projects
   component "Панель портов" as Ports
   component "Панель MCP-серверов" as Mcp
-  component "Таблица сессий" as Sessions
-  component "Детали\nSubagents, чат, timeline" as Details
+  component "Таблица сессий\nколонка Last" as Sessions
+  component "Детали\nSubagents, датированный чат, датированный timeline" as Details
 }
 
 component "MultiCollector" as Collector
 class "AgentSession" as AgentSession
 class "RateLimitInfo" as RateLimitInfo
+class "ProjectActivity" as ProjectActivity
+class "HostMetrics" as HostMetrics
 
 UI --> Keyboard : читает клавиши
 UI --> Timer : автообновление
@@ -31,8 +34,13 @@ Timer --> Collector : сбор данных
 UI --> Collector : ручное обновление
 Collector --> AgentSession
 Collector --> RateLimitInfo
+Collector --> ProjectActivity
+Collector --> HostMetrics
 UI --> Layout : вычисляет размеры панелей
+Layout --> Header
 Layout --> Panels
 AgentSession --> Panels : метрики и детали сессий
 RateLimitInfo --> Quota : использование квот
+ProjectActivity --> Projects : строки активности проектов
+HostMetrics --> Header : CPU, MEM, load
 @enduml
