@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-06-29
+
+### Added
+
+- Claude subagent discovery in `abtop-py` from local subagent metadata and transcript files.
+- `Model/Rsn` display for Codex reasoning effort when rollout `turn_context` data exposes it.
+
+### Changed
+
+- The top token-rate graph now uses the same rolling rate series as the numeric `Token Rate` label, avoiding isolated per-tick spikes for bursty Codex token-count updates.
+- The `context` panel now has a fixed six-line content area with a five-row Unicode block-level token graph plus one time-axis row; project rows are clipped to the available space.
+- The token-rate graph uses a default vertical scale of `32k/min` and expands when the visible token rate exceeds that value; the current scale is shown under `Token Rate`.
+
+### Documentation
+
+- README files now document Claude-only structured subagents, Codex reasoning-effort display, the lack of a structured Codex speed field, and the difference between rolling token-rate bars and event-based `tokens/turn` history.
+
 ## [1.2.0] - 2026-06-22
 
 ### Added
@@ -17,7 +34,7 @@ All notable changes to this project will be documented in this file.
 - The top header now displays unknown attributed agent memory as `Σ-` instead of misleading `Σ0M`.
 - Quota data age is labeled as `upd Ns` instead of a bare `Ns ago`.
 - Claude quota setup hint now points to `./abtop-py.py --setup`.
-- Token-rate calculations use rolling values for numeric rates and per-tick values for graph bars so stale bursts do not keep drawing as live consumption.
+- Token-rate calculations use rolling values for numeric rates.
 - Completed Codex tool calls use explicit `Wall time` from tool output when available, avoiding user-approval wait time being counted as command runtime.
 - Middle dashboard panels are one row taller to prevent quota reset labels from colliding with the token-rate footer.
 

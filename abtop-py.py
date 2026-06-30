@@ -37,7 +37,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 APP_NAME = "abtop-py"
-__VERSION__ = "1.2.0"
+__VERSION__ = "1.3.0"
 __AUTHOR__ = "Tarasov Dmitry"
 
 DEFAULT_INTERVAL = 2.0
@@ -148,6 +148,17 @@ class ProjectActivity:
 
 
 @dataclass
+class SubAgent:
+    """Spawned Claude subagent metadata.
+
+    Рус: Метаданные запущенного Claude subagent.
+    """
+    name: str
+    status: str
+    tokens: int = 0
+
+
+@dataclass
 class AgentSession:
     """Full session for an AI agent run (tokens, tasks, context, children).
 
@@ -179,6 +190,7 @@ class AgentSession:
     context_history: List[int] = field(default_factory=list)
     compaction_count: int = 0
     context_window: int = 0
+    subagents: List[SubAgent] = field(default_factory=list)
     children: List[ChildProcess] = field(default_factory=list)
     initial_prompt: str = ""
     first_assistant_text: str = ""
@@ -2170,6 +2182,79 @@ def merge_transcript_state(prev: TranscriptState, delta: TranscriptState) -> Tra
     return prev
 
 
+def transcript_total_tokens(state: TranscriptState) -> int:
+    """Return total tokens recorded in a parsed transcript state.
+
+    Рус: Вернуть общее число токенов из распарсенного состояния транскрипта.
+    """
+    return state.total_input + state.total_output + state.total_cache_read + state.total_cache_create
+
+
+def claude_project_dir(config_root: Path, cwd: str, session_id: str, transcript_path: Optional[Path]) -> Path:
+    """Resolve the Claude project directory for a session.
+
+    Рус: Определить каталог проекта Claude для сессии.
+    """
+    if transcript_path:
+        parent = transcript_path.parent
+        if parent:
+            return parent
+    direct = config_root / "projects" / encode_claude_cwd(cwd)
+    if direct.exists() and not is_symlink(direct):
+        return direct
+    pattern = str(config_root / "projects" / "*" / ("%s.jsonl" % session_id))
+    for match in glob.glob(pattern):
+        p = Path(match)
+        if p.exists() and not is_symlink(p):
+            return p.parent
+    return direct
+
+
+def collect_subagents(subagents_dir: Path) -> List[SubAgent]:
+    """Collect Claude subagents from agent-*.meta.json plus matching JSONL files.
+
+    Рус: Собрать Claude subagents из agent-*.meta.json и соответствующих JSONL-файлов.
+    """
+    result: List[SubAgent] = []
+    try:
+        entries = list(subagents_dir.iterdir())
+    except Exception:
+        return result
+
+    meta_paths: List[Path] = []
+    for path in entries:
+        if is_symlink(path):
+            continue
+        if path.name.endswith(".meta.json"):
+            meta_paths.append(path)
+
+    for meta_path in sorted(meta_paths):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        description = meta.get("description")
+        name = clean_text(description if isinstance(description, str) else "agent", 30) or "agent"
+        jsonl_path = meta_path.with_name(meta_path.name.replace(".meta.json", ".jsonl"))
+        tokens = 0
+        last_activity = 0.0
+        try:
+            st = jsonl_path.stat()
+            last_activity = st.st_mtime
+        except Exception:
+            last_activity = 0.0
+        if jsonl_path.exists() and not is_symlink(jsonl_path):
+            state = parse_claude_transcript_delta(jsonl_path, 0, 0, 0)
+            tokens = transcript_total_tokens(state)
+            if state.last_activity:
+                last_activity = max(last_activity, state.last_activity)
+        status = "working" if last_activity and time.time() - last_activity < 30 else "done"
+        result.append(SubAgent(name=name, status=status, tokens=tokens))
+    return result
+
+
 def read_configured_claude_model(cwd: str) -> str:
     """Read the Claude model from project or home settings files.
 
@@ -2468,6 +2553,8 @@ class ClaudeCollector:
         branch, added, modified = collect_git_stats(cwd)
         if not branch:
             branch = state.git_branch
+        project_dir = claude_project_dir(root, cwd, session_id, transcript_path)
+        subagents = collect_subagents(project_dir / session_id / "subagents")
         return AgentSession(
             agent_cli="claude",
             pid=pid,
@@ -2495,6 +2582,7 @@ class ClaudeCollector:
             context_history=tail(state.context_history, MAX_HISTORY),
             compaction_count=state.compaction_count,
             context_window=context_window,
+            subagents=subagents,
             children=collect_children(pid, child_map, processes, ports),
             initial_prompt=state.initial_prompt,
             first_assistant_text=state.first_assistant_text,
@@ -2771,6 +2859,10 @@ def parse_codex_jsonl(path: Path) -> Optional[CodexResult]:
                         result.model = payload["model"]
                     if isinstance(payload.get("effort"), str):
                         result.effort = payload["effort"]
+                    elif isinstance(payload.get("collaboration_mode"), dict):
+                        settings = payload["collaboration_mode"].get("settings")
+                        if isinstance(settings, dict) and isinstance(settings.get("reasoning_effort"), str):
+                            result.effort = settings["reasoning_effort"]
                     cw = safe_int(payload.get("model_context_window"))
                     if cw:
                         result.context_window = cw
@@ -3686,6 +3778,30 @@ def session_summary(session: AgentSession) -> str:
     return session_task(session)
 
 
+def compact_effort(effort: str) -> str:
+    """Return a compact reasoning effort label.
+
+    Рус: Вернуть компактную метку reasoning effort.
+    """
+    value = clean_text(effort, 20).casefold()
+    return {
+        "minimal": "min",
+        "medium": "med",
+    }.get(value, value)
+
+
+def model_effort_label(session: AgentSession) -> str:
+    """Return model plus reasoning effort when available.
+
+    Рус: Вернуть модель и reasoning effort, если он доступен.
+    """
+    model = (session.model or "-").split("/")[-1]
+    effort = compact_effort(session.effort)
+    if effort:
+        return "%s/%s" % (model, effort)
+    return model
+
+
 def format_percent(value: float) -> str:
     """Format a percentage value for display, returning '--' for non-positive values.
 
@@ -3707,12 +3823,12 @@ def print_once(sessions: List[AgentSession], collector: MultiCollector) -> None:
         for rl in collector.rate_limits:
             print("  %-6s 5h=%s 7d=%s" % (rl.source, rate_cell(rl.five_hour_pct), rate_cell(rl.seven_day_pct)))
     print()
-    header = "%-7s %-6s %-12s %-10s %-10s %-7s %-8s %-5s %s"
-    print(header % ("AGENT", "PID", "PROJECT", "STATUS", "MODEL", "CTX", "TOKENS", "TURN", "TASK"))
+    header = "%-7s %-6s %-12s %-10s %-12s %-7s %-8s %-5s %s"
+    print(header % ("AGENT", "PID", "PROJECT", "STATUS", "MODEL/RSN", "CTX", "TOKENS", "TURN", "TASK"))
     print("-" * 100)
     for s in sessions:
         task = s.current_tasks[-1] if s.current_tasks else ""
-        model = (s.model or "-").split("/")[-1]
+        model = model_effort_label(s)
         print(
             header
             % (
@@ -3720,7 +3836,7 @@ def print_once(sessions: List[AgentSession], collector: MultiCollector) -> None:
                 s.pid or "-",
                 s.project_name[:12],
                 status_display(s.status, s.wait_reason),
-                model[:10],
+                model[:12],
                 format_percent(s.context_percent),
                 human_tokens(s.total_tokens()),
                 s.turn_count,
@@ -3888,9 +4004,16 @@ def subagent_rows(session: AgentSession) -> List[Tuple[str, str, str]]:
     Рус: Формирует строки отображения для вызовов инструментов, похожих на subagent.
     """
     rows: List[Tuple[str, str, str]] = []
+    for subagent in session.subagents:
+        state = "•" if subagent.status == "working" else "√"
+        metric = human_tokens(subagent.tokens) if subagent.tokens else subagent.status
+        rows.append((state, subagent.name, metric))
+    if rows:
+        return tail(rows, 8)
+
     for call in session.tool_calls:
-        label = call.name.casefold()
-        if label not in ("agent", "task"):
+        label = re.sub(r"[^a-z0-9]+", "_", call.name.casefold()).strip("_")
+        if label not in ("agent", "task", "spawn_agent", "wait_agent", "send_input") and "subagent" not in label:
             continue
         state = "√" if call.duration_ms else "•"
         detail = call.arg or call.name
@@ -3956,11 +4079,12 @@ def sparkline(values: Sequence[float], width: int) -> str:
     return "".join(chars).rjust(width)
 
 
-def graph_rows(values: Sequence[float], width: int, height: int) -> List[str]:
+def graph_rows(values: Sequence[float], width: int, height: int, max_value: float = 0.0) -> List[str]:
     """Render a mini bar chart from float values using Unicode block characters.
 
     Рус: Отрисовать мини-диаграмму столбцов из float-значений с использованием символов Unicode блоков.
     """
+    ticks = "▁▂▃▄▅▆▇█"
     if width <= 0 or height <= 0:
         return []
     if not values:
@@ -3968,12 +4092,22 @@ def graph_rows(values: Sequence[float], width: int, height: int) -> List[str]:
     values = list(values)[-width:]
     if len(values) < width:
         values = [0.0] * (width - len(values)) + values
-    mx = max(values) or 1.0
-    levels = [int(round((height - 1) * (value / mx))) if mx > 0 else 0 for value in values]
+    mx = max(float(max_value or 0.0), max(values), 1.0)
+    max_level = height * len(ticks)
+    levels = [
+        max(1, int(round(max_level * (value / mx)))) if mx > 0 and value > 0 else 0
+        for value in values
+    ]
     rows: List[str] = []
     for row in range(height):
-        threshold = height - 1 - row
-        chars = ["⣿" if level >= threshold and values[i] > 0 else " " for i, level in enumerate(levels)]
+        base = (height - row - 1) * len(ticks)
+        chars = []
+        for level in levels:
+            if level <= base:
+                chars.append(" ")
+                continue
+            fill = min(len(ticks), level - base)
+            chars.append(ticks[max(0, fill - 1)])
         rows.append("".join(chars))
     return rows
 
@@ -4238,7 +4372,7 @@ class CursesUI:
         self.draw_header(stdscr, y, width)
         y += 1
         available = max(0, height - y - footer_h)
-        context_h = min(10, max(5, len(self.sessions) + 4)) if available >= 24 and width >= 100 else 0
+        context_h = 8 if available >= 24 and width >= 100 else 0
         mid_h = 9 if available - context_h >= 17 and width >= 100 else 0
         sessions_h = max(5, height - y - footer_h - context_h - mid_h)
 
@@ -4332,30 +4466,37 @@ class CursesUI:
         agg = aggregate_sessions(self.sessions)
         ticks_per_min = max(1, int(60.0 / max(0.5, self.interval)))
         rate_history = rolling_token_rates_per_minute(self.collector.token_rates, ticks_per_min)
-        graph_history = per_tick_token_rates_per_minute(self.collector.token_rates, ticks_per_min)
+        graph_history = rate_history
         tokens_per_min = int(rate_history[-1]) if rate_history else 0
         left_w = min(36, max(24, w // 4))
         right_w = min(74, max(42, w // 3))
         graph_w = max(8, w - left_w - right_w - 6)
         graph_x = x + left_w + 2
         right_x = x + w - right_w - 1
+        graph_values = list(graph_history)[-graph_w:]
+        graph_scale = max(32_000.0, max(graph_values) if graph_values else 0.0, float(tokens_per_min))
 
         self.add(stdscr, inner_y, x + 2, "Token Rate ", w, self.attr("dim", bold=True))
         rate_text = "%s/min" % human_tokens(tokens_per_min)
         self.add(stdscr, inner_y, x + 14, rate_text, w, self.attr("green", bold=True))
-        self.add(stdscr, y + h - 2, x + 2, "%s Total" % human_tokens(agg["total_tokens"]), w, self.attr("fg", bold=True))
+        self.add(stdscr, inner_y + 1, x + 2, "Scale     ", w, self.attr("dim", bold=True))
+        self.add(stdscr, inner_y + 1, x + 14, "%s/min" % human_tokens(int(graph_scale)), w, self.attr("dim", bold=True))
 
-        rows = graph_rows(graph_history, graph_w, max(1, inner_h - 2))
+        graph_h = min(5, max(1, inner_h - 1))
+        axis_y = inner_y + graph_h
+        self.add(stdscr, axis_y, x + 2, "%s Total" % human_tokens(agg["total_tokens"]), w, self.attr("fg", bold=True))
+
+        rows = graph_rows(graph_history, graph_w, graph_h, graph_scale)
         for idx, row in enumerate(rows):
-            self.add(stdscr, inner_y + 1 + idx, graph_x, row, w, self.attr("orange"))
+            self.add(stdscr, inner_y + idx, graph_x, row, w, self.attr("orange"))
         axis = relative_time_axis(graph_w, self.interval, 30) if graph_w > 1 else ""
         if axis:
-            self.add(stdscr, y + h - 2, graph_x, axis, w, self.attr("dim", bold=True))
+            self.add(stdscr, axis_y, graph_x, axis, w, self.attr("dim", bold=True))
 
         self.add(stdscr, inner_y, right_x, "Project", w, self.attr("fg", bold=True))
         self.add(stdscr, inner_y, right_x + 18, "Context", w, self.attr("fg", bold=True))
         self.add(stdscr, inner_y, right_x + 52, "Window", w, self.attr("fg", bold=True))
-        max_rows = max(0, inner_h - 1)
+        max_rows = max(0, min(inner_h - 1, h - 3))
         for idx, session in enumerate(self.sessions[:max_rows]):
             row_y = inner_y + 1 + idx
             self.add(stdscr, row_y, right_x, clamp(session.project_name, 16), w, self.attr("fg", bold=True))
@@ -4553,7 +4694,7 @@ class CursesUI:
 
         Рус: Отрисовать таблицу списка сессий с заголовком и строками.
         """
-        header = " AI  Pid     Project        Session   Config        Summary                      Status   Model          Context Tokens  Memory Last  Turn"
+        header = " AI  Pid     Project        Session   Config        Summary                      Status   Model/Rsn      Context Tokens  Memory Last  Turn"
         self.add(stdscr, y, x, clamp(header, w), w, self.attr("fg", bold=True))
         rows_avail = max(0, h - 1)
         row_span = 2 if rows_avail >= 2 else 1
@@ -4573,7 +4714,7 @@ class CursesUI:
             attr = self.attr("selected") if selected else self.attr("fg", bold=True)
             marker = ">" if selected else " "
             pid = str(session.pid or "-")
-            model = (session.model or "-").split("/")[-1]
+            model = model_effort_label(session)
             status_text = "%s %s" % (status_marker(session.status), status_display(session.status, session.wait_reason))
             config = session.config_root or "-"
             last_text = compact_age_label(session.last_activity_ms or session.started_at)
@@ -4639,15 +4780,17 @@ class CursesUI:
             self.draw_chat(stdscr, body_y, right_x, content_h, right_w, session)
         if footer_lines:
             footer_y = y + h - footer_lines
+            effort_part = " · effort %s" % session.effort if session.effort else ""
             self.add(
                 stdscr,
                 footer_y,
                 x,
-                "MEM %s · %d/%d chat · %d calls" % (
+                "MEM %s · %d/%d chat · %d calls%s" % (
                     "%dM" % session.mem_mb if session.mem_mb else "0",
                     len(session.chat_messages),
                     MAX_CHAT_MESSAGES,
                     len(session.tool_calls),
+                    effort_part,
                 ),
                 w,
                 self.attr("dim", bold=True),
